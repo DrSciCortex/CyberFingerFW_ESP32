@@ -1,0 +1,7 @@
+{
+    "pins":{"buttonAX":43,"buttonBY":44,"buttonBP":39,"buttonST":38,"buttonStartSelect":0,"joyX":17,"joyY":18},
+    "axes":{"invertX":true,"invertY":true},
+    "config":{"play_sound":true,"right_not_left":true,"boot_debug":false},
+    "wifi_channel":11, "esp_interval":11363
+}
+
