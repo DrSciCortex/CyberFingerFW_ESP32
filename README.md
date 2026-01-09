@@ -1,5 +1,23 @@
 # CyberFingerFW_ESP32
-ESP32 Firmware for the SciCortex CyberFinger; see https://scicortex.com/products/cyberfinger-v1-0-beta
+ESP32 Firmware for the SciCortex CyberFinger - a device that combines the versitility of a VR controller with the freedom and social expressiveness of optical hand tracking.
+CyberFinger was designed for creative, research, enterprise and education use cases in Resonite.
+
+<img src="https://github.com/user-attachments/assets/4be3dc2d-3672-4cfb-9949-469d33995f76" width="300">
+
+
+To use this firmware, you need a pair of CyberFingers;
+see https://scicortex.com/products/cyberfinger-v1-0-beta
+
+or you could build your own:
+https://scicortex.com/products/diy-cyberfinger-kit
+
+and you need the CyberFingerMod for Resonite https://github.com/DrSciCortex/CyberFingerMod.
+Further install and setup steps are described there. 
+
+👉 **[Watch the CyberFinger demo on YouTube](https://www.youtube.com/watch?v=8n6NSjitQ9c)
+
+[![Video Title](https://img.youtube.com/vi/8n6NSjitQ9c/0.jpg)](https://www.youtube.com/watch?v=8n6NSjitQ9c)
+
 
 # License
 
