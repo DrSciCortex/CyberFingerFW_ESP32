@@ -23,13 +23,13 @@ static inline bool leftMeaningfullyChanged(const HalfPacket &a, const HalfPacket
   return false;
 }
 
-GamepadMerged::GamepadMerged(XboxGamepadDevice* gamepad, const Config& cfg)
+GamepadMerged::GamepadMerged(IGamepadOut* gamepad, const Config& cfg)
 : gamepad_(gamepad), cfg_(cfg) {}
 
-GamepadMerged::GamepadMerged(XboxGamepadDevice* gamepadPtr)
+GamepadMerged::GamepadMerged(IGamepadOut* gamepadPtr)
 : GamepadMerged(gamepadPtr, Config{}) {}
 
-void GamepadMerged::setGamepad(XboxGamepadDevice* gamepadPtr) {
+void GamepadMerged::setGamepad(IGamepadOut* gamepadPtr) {
     gamepad_ = gamepadPtr;
 }
 
@@ -92,59 +92,25 @@ void GamepadMerged::merge_() {
   cur_ = m;
 }
 
-void GamepadMerged::press_(uint16_t hidBit) {
-  auto* gp = gamepad_;
-  if (!gp) return;
-
-  if      (hidBit == H_START)  gp->press(XBOX_BUTTON_START);
-  else if (hidBit == H_SELECT) gp->press(XBOX_BUTTON_SELECT);
-  else if (hidBit == H_A)      gp->press(XBOX_BUTTON_A);
-  else if (hidBit == H_B)      gp->press(XBOX_BUTTON_B);
-  else if (hidBit == H_X)      gp->press(XBOX_BUTTON_X);
-  else if (hidBit == H_Y)      gp->press(XBOX_BUTTON_Y);
-  else if (hidBit == H_RS)     gp->press(XBOX_BUTTON_RS);
-  else if (hidBit == H_RB)     gp->press(XBOX_BUTTON_RB);
-  else if (hidBit == H_LS)     gp->press(XBOX_BUTTON_LS);
-  else if (hidBit == H_LB)     gp->press(XBOX_BUTTON_LB);
-
-  if (cfg_.debug) USBSerial.printf("press 0x%04x\n", hidBit);
-}
-
-void GamepadMerged::release_(uint16_t hidBit) {
-  auto* gp = gamepad_;
-  if (!gp) return;
-
-  if      (hidBit == H_START)  gp->release(XBOX_BUTTON_START);
-  else if (hidBit == H_SELECT) gp->release(XBOX_BUTTON_SELECT);
-  else if (hidBit == H_A)      gp->release(XBOX_BUTTON_A);
-  else if (hidBit == H_B)      gp->release(XBOX_BUTTON_B);
-  else if (hidBit == H_X)      gp->release(XBOX_BUTTON_X);
-  else if (hidBit == H_Y)      gp->release(XBOX_BUTTON_Y);
-  else if (hidBit == H_RS)     gp->release(XBOX_BUTTON_RS);
-  else if (hidBit == H_RB)     gp->release(XBOX_BUTTON_RB);
-  else if (hidBit == H_LS)     gp->release(XBOX_BUTTON_LS);
-  else if (hidBit == H_LB)     gp->release(XBOX_BUTTON_LB);
-
-  if (cfg_.debug) USBSerial.printf("release 0x%04x\n", hidBit);
-}
+void GamepadMerged::press_(uint16_t hidBit)   { if (gamepad_) gamepad_->press(hidBit); }
+void GamepadMerged::release_(uint16_t hidBit) { if (gamepad_) gamepad_->release(hidBit); }
 
 // ---- Adapter points for gamepad API ----
 
 void GamepadMerged::setLeftThumb_(int16_t x, int16_t y) {
-  gamepad_->setLeftThumb(x, y);
+  if (gamepad_) gamepad_->setLeftThumb(x, y);
 }
 
 void GamepadMerged::setRightThumb_(int16_t x, int16_t y) {
-  gamepad_->setRightThumb(x, y);
+  if (gamepad_) gamepad_->setRightThumb(x, y);
 }
 
 void GamepadMerged::setTriggers_(uint8_t lt, uint8_t rt) {
-  gamepad_->setLeftTrigger(lt);
-  gamepad_->setRightTrigger(rt);
+  if (gamepad_) gamepad_->setTriggers(lt, rt);
 }
 
 void GamepadMerged::sendReport_() {
-  gamepad_->sendGamepadReport();
+  if (gamepad_) gamepad_->sendGamepadReport();
 }
 
 // ---- Diff emitters ----

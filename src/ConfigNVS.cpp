@@ -31,6 +31,7 @@ void loadConfigFromNVS() {
   cfg.buttonStartSelect  = prefs.getInt("pin_btnStSel",  cfg.buttonStartSelect);
   cfg.play_sound = prefs.getBool("play_sound", cfg.play_sound);
   cfg.boot_debug = prefs.getBool("boot_debug", cfg.boot_debug);
+  cfg.linux_mode = prefs.getBool("linux_mode", cfg.linux_mode);  
   cfg.right_not_left = prefs.getBool("right_not_left", cfg.right_not_left);
   cfg.wifi_channel = prefs.getUInt("wifi_channel", cfg.wifi_channel);
   cfg.stick_deadzone = prefs.getUInt("stick_deadzn", cfg.stick_deadzone);
@@ -49,6 +50,7 @@ void saveConfigToNVS() {
   prefs.putBool("invX",    cfg.invertX);
   prefs.putBool("invY",    cfg.invertY);
   prefs.putBool("right_not_left",    cfg.right_not_left);
+  prefs.putBool("linux_mode",    cfg.linux_mode);
   prefs.putBool("play_sound",    cfg.play_sound);
   prefs.putBool("boot_debug",    cfg.boot_debug);
   prefs.putInt("pin_btnAX",      cfg.buttonAX);
@@ -92,6 +94,7 @@ bool applyJsonToConfig(const String& jsonLine, String& errMsg) {
     if (config.containsKey("play_sound")) cfg.play_sound = config["play_sound"];
     if (config.containsKey("boot_debug")) cfg.boot_debug = config["boot_debug"];
     if (config.containsKey("right_not_left")) cfg.right_not_left = config["right_not_left"];
+    if (config.containsKey("linux_mode")) cfg.linux_mode = config["linux_mode"];
     if (config.containsKey("stick_deadzone")) cfg.stick_deadzone = config["stick_deadzone"];
     if (config.containsKey("trigger_deadzone")) cfg.trigger_deadzone = config["trigger_deadzone"];
   }
@@ -222,6 +225,7 @@ String configToJsonString() {
   config["right_not_left"] = cfg.right_not_left;
   config["stick_deadzone"] = cfg.stick_deadzone;
   config["trigger_deadzone"] = cfg.trigger_deadzone;
+  config["linux_mode"] = cfg.linux_mode;
 
   char macStr[18];
   snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",

@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "IGamepadOut.h"
 
 class XboxGamepadDevice; 
 
@@ -60,8 +61,9 @@ public:
         bool debug = false;
     };
 
-    GamepadMerged(XboxGamepadDevice *gamepadPtr, const Config& cfg);
-    GamepadMerged(XboxGamepadDevice* gamepadPtr);
+    GamepadMerged(IGamepadOut* out, const Config& cfg);
+    explicit GamepadMerged(IGamepadOut* out);
+
 
     // RIGHT side only
     void setRightLocal(const HalfPacket &right);
@@ -70,7 +72,7 @@ public:
     // does merge + diff + emits events + sendGamepadReport() once if needed
     void updateAndSendIfChanged();
 
-    void setGamepad(XboxGamepadDevice* gamepadPtr);
+    void setGamepad(IGamepadOut* gamepadPtr);
     void setConfig(const Config& cfg);
 
     // LEFT side only
@@ -119,7 +121,7 @@ private:
     // void setDpad_(uint8_t hat);
     void sendReport_();
 
-    XboxGamepadDevice *gamepad_;
+    IGamepadOut *gamepad_;
     Config cfg_;
 
     HalfPacket left_{};

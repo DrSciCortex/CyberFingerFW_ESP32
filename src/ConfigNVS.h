@@ -18,6 +18,7 @@ struct Config {
   bool play_sound = true;
   bool boot_debug = false;
   bool right_not_left = true;
+  bool linux_mode = false;
 
   uint8_t peer_mac[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
   uint16_t wifi_channel = 6;

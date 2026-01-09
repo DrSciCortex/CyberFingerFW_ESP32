@@ -31,7 +31,9 @@
 #include "splash_images.h"
 #include "audio.h"
 #include "HWCDC.h"
-
+#include "GenericGamepadOut.h"
+#include "XBoxOut.h"
+#include "IGamepadOut.h"
 
 HWCDC USBSerial;
 
@@ -218,7 +220,12 @@ int frame; // count frames, black screen reset after BLACK_FRAME_COUNT
 uint16_t joyCenterRawX;
 uint16_t joyCenterRawY;
 
-XboxGamepadDevice *gamepad;
+XboxGamepadDevice *xbox_gamepad;
+GamepadDevice *generic_gamepad;
+XboxOut xbox_out;
+GenericOut generic_out;
+IGamepadOut* gamepad_out = nullptr;
+
 MouseDevice *mouse;
 BleCompositeHID *compositeHID;
 
@@ -634,39 +641,46 @@ void setup() {
   for (auto &p : history) p = {0,0,0};
 
   const char *devName = cfg.right_not_left
-        ? "CyberFinger-right-v1b(XboxSX)"
-        : "CyberFinger-left-v1b(Mouse)";
+        ? "CyberFinger-right-v1b"
+        : "CyberFinger-left-v1b";
   
   compositeHID = new BleCompositeHID(devName, "SciCortex Technologies Corp.", 100);
 
   BLEHostConfiguration hostConfig;
 
   if (cfg.right_not_left) {
-    //Serial.begin(115200);
-    //pinMode(ledPin, OUTPUT); // sets the digital pin as output
 
-    // Uncomment one of the following two config types depending on which controller version you want to use
-    // The XBox series X controller only works on linux kernels >= 6.5
+    if (!cfg.linux_mode) {
+      // Uncomment one of the following two config types depending on which controller version you want to use
+      // The XBox series X controller only works on linux kernels >= 6.5
+      //XboxOneSControllerDeviceConfiguration* config = new XboxOneSControllerDeviceConfiguration();
+      XboxSeriesXControllerDeviceConfiguration *config = new XboxSeriesXControllerDeviceConfiguration();
 
-    //XboxOneSControllerDeviceConfiguration* config = new XboxOneSControllerDeviceConfiguration();
-    XboxSeriesXControllerDeviceConfiguration *config = new XboxSeriesXControllerDeviceConfiguration();
+      // The composite HID device pretends to be a valid Xbox controller via vendor and product IDs (VID/PID).
+      // Platforms like windows/linux need this in order to pick an XInput driver over the generic BLE GATT HID driver.
+      hostConfig = config->getIdealHostConfiguration();
+      // report the correct firmware version    
 
-    // The composite HID device pretends to be a valid Xbox controller via vendor and product IDs (VID/PID).
-    // Platforms like windows/linux need this in order to pick an XInput driver over the generic BLE GATT HID driver.
-    hostConfig = config->getIdealHostConfiguration();
-    // report the correct firmware version
-  
+      // Set up gamepad
+      xbox_gamepad = new XboxGamepadDevice(config);
 
-    // Set up gamepad
-    gamepad = new XboxGamepadDevice(config);
+      // Set up vibration event handler
+      FunctionSlot<XboxGamepadOutputReportData> vibrationSlot(OnVibrateEvent);
+      xbox_gamepad->onVibrate.attach(vibrationSlot);
+      //TODO -> how to get L/R vibrate?
 
-    // Set up vibration event handler
-    FunctionSlot<XboxGamepadOutputReportData> vibrationSlot(OnVibrateEvent);
-    gamepad->onVibrate.attach(vibrationSlot);
-    //TODO -> how to get L/R vibrate?
+      xbox_out.set(xbox_gamepad);
+      gamepad_out =  &xbox_out;
+      gamepad_handler.setGamepad(&xbox_out);
+    }
+    else {
 
-    gamepad_handler.setGamepad(gamepad);
+      generic_gamepad = new GamepadDevice();
 
+      generic_out.set(generic_gamepad);
+      gamepad_out = &generic_out;
+      gamepad_handler.setGamepad(&generic_out);
+    }
 
   }
 
@@ -678,7 +692,7 @@ void setup() {
   calibrateJoyCenter();  
   
   // Set up mouse on both sides
-  mouse = new MouseDevice();
+  if (!cfg.linux_mode) mouse = new MouseDevice();
 
   USBSerial.println("Using VID source: " + String(hostConfig.getVidSource(), HEX));
   USBSerial.println("Using VID: " + String(hostConfig.getVid(), HEX));
@@ -699,26 +713,32 @@ void setup() {
   analogSetPinAttenuation(cfg.joyY, ADC_11db);
 
   // Add the mouse
-  compositeHID->addDevice(mouse);
+  if (!cfg.linux_mode) compositeHID->addDevice(mouse);
 
   hostConfig.setFirmwareRevision(FW_VERSION_FULL_STR);
   if (cfg.right_not_left) {
+    if (!cfg.linux_mode) {
     // right is gamepad
 
     //gamepad->resetButtons();
-    gamepad->resetInputs();
+    xbox_gamepad->resetInputs();
 
     // Add all child devices to the top-level composite HID device to manage them
-    compositeHID->addDevice(gamepad);
+    compositeHID->addDevice(xbox_gamepad);
+    }
+    else {
+      generic_gamepad->resetButtons();
+      compositeHID->addDevice(generic_gamepad);
+    }
   }
 
   esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
   compositeHID->begin(hostConfig);
 
   if (cfg.right_not_left) {
-    gamepad->setLeftThumb(0, 0);
-    gamepad->setRightThumb(0, 0);
-    gamepad->sendGamepadReport();
+    gamepad_out->setLeftThumb(0, 0);
+    gamepad_out->setRightThumb(0, 0);
+    gamepad_out->sendGamepadReport();
   }
 
   // Start comm with left/right
@@ -740,14 +760,15 @@ void setup() {
     tmouse.invertScrollV = false;   // "natural" scroll feel
     tmouse.invertScrollH = true;
   }
-
-  TM_Callbacks cb{};
-  cb.move = MouseMove;
-  cb.press = MouseButtonPress;
-  cb.release = MouseButtonRelease;
-  cb.scroll = MouseScroll;
-  cb.user = mouse;
-  tmouse.begin(cb);
+  if (!cfg.linux_mode) {
+    TM_Callbacks cb{};
+    cb.move = MouseMove;
+    cb.press = MouseButtonPress;
+    cb.release = MouseButtonRelease;
+    cb.scroll = MouseScroll;
+    cb.user = mouse;
+    tmouse.begin(cb);
+  }
 
   #ifdef HAS_GFX
 
@@ -806,7 +827,7 @@ void loop() {
 
   // --- 1) handle any new touch and store it ---
   #ifdef HAS_TOUCH
-  if (FT3168->IIC_Interrupt_Flag) {
+  if (FT3168->IIC_Interrupt_Flag && !cfg.linux_mode) {
       FT3168->IIC_Interrupt_Flag = false;
 
       uint32_t num_fingers = (uint32_t)FT3168->IIC_Read_Device_Value(
