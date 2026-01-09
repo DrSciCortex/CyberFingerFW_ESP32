@@ -1,0 +1,30 @@
+CyberFinger Firmware
+Copyright (c) 2026 DrSciCortex
+
+This product is licensed under the GNU General Public License v3.0 only
+(GPL-3.0-only), except where otherwise noted in individual source files.
+For full license text see: LICENSE
+
+This product includes third-party software components under the following
+licenses. The corresponding license texts are provided with the source
+distribution and referenced below.
+
+Apache-2.0 licensed source files:
+- src/es8311.cpp
+- src/es8311.h
+- src/es8311_reg.h
+  License text: Apache-2.0 (see file headers and LICENSES/Apache-2.0.txt)
+
+CC0-1.0 licensed source files:
+- src/audio.cpp
+- src/audio_config.h
+  License text: CC0-1.0 (see file headers and LICENSES/CC0-1.0.txt)
+
+Additional third-party libraries are included under their respective licenses,
+with license texts located in their library directories:
+- Callback - MIT License (see lib/Callback/LICENSE.txt)
+- Arduino_DriveBus - BSD License (see lib/Arduino_DriveBus/LICENSE)
+- Arduino_GFX - GPL-3.0 License (see lib/GFX_Library_for_Arduino/license.txt)
+
+Unless otherwise stated in individual file headers, all source code is
+Copyright (c) 2026 DrSciCortex.
