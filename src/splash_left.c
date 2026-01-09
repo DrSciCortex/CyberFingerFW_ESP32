@@ -1,4 +1,10 @@
-#include <stdint.h>
+/*
+ * SPDX-FileCopyrightText: 2026 DrSciCortex
+ *
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
+ #include <stdint.h>
 #include "splash_images.h"
 
 const uint8_t splash_left_map[] = {
