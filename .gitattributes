@@ -1,0 +1,27 @@
+# Let Git detect text files and normalize line endings to LF in the repo
+* text=auto
+
+# Enforce LF for cross-platform scripts and configs (even on Windows)
+*.sh  text eol=lf
+*.py  text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+Dockerfile text eol=lf
+*.ts  text eol=lf
+*.js  text eol=lf
+
+# Keep CRLF for Windows-specific scripts
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Never modify binaries
+*.png -text
+*.jpg -text
+*.jpeg -text
+*.gif -text
+*.pdf -text
+*.zip -text
+*.exe -text
+*.dll -text
