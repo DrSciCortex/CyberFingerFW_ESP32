@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2026 DrSciCortex
+ *
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 #include "gamepad_merged.h"
 #include <Arduino.h>
 #include <XboxGamepadDevice.h> 

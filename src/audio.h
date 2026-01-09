@@ -1,6 +1,10 @@
+/*
+ * SPDX-FileCopyrightText: 2026 DrSciCortex
+ *
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 #pragma once
-
-
 
 enum SoundId : int {
     SOUND_BOOT = 0,
