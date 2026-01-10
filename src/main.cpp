@@ -230,7 +230,7 @@ XboxGamepadDevice *xbox_gamepad;
 GamepadDevice *generic_gamepad;
 XboxOut xbox_out;
 GenericOut generic_out;
-IGamepadOut* gamepad_out = nullptr;
+IGamepadOut *gamepad_out = nullptr;
 
 MouseDevice *mouse;
 BleCompositeHID *compositeHID;
@@ -445,6 +445,7 @@ int16_t mapCenteredToXbox(int raw, uint16_t centerRaw)
         if (posRange <= 0) return 0;
         int32_t v = (int32_t)d * XBOX_STICK_MAX / posRange;
         if (v > XBOX_STICK_MAX) v = XBOX_STICK_MAX;
+        //if (cfg.)
         return (int16_t)v;
     } else {
         int negRange = (int)centerRaw;             // available headroom to the left
@@ -681,8 +682,18 @@ void setup() {
     }
     else {
 
-      generic_gamepad = new GamepadDevice();
+      GamepadConfiguration bleGamepadConfig;
+      bleGamepadConfig.setAutoReport(false);
+      bleGamepadConfig.setControllerType(CONTROLLER_TYPE_GAMEPAD);
+      bleGamepadConfig.setButtonCount(16);
+      bleGamepadConfig.setWhichAxes(true, true, true, true, false, false, false, false);
+      bleGamepadConfig.setWhichSimulationControls(false, false, false, false, false);
+      bleGamepadConfig.setHatSwitchCount(0);
+      bleGamepadConfig.setAxesMin(XBOX_STICK_MIN);
+      bleGamepadConfig.setAxesMax(XBOX_STICK_MAX);
 
+      generic_gamepad = new GamepadDevice(bleGamepadConfig);
+      
       generic_out.set(generic_gamepad);
       gamepad_out = &generic_out;
       gamepad_handler.setGamepad(&generic_out);
@@ -697,8 +708,6 @@ void setup() {
   // measure center of potentiometer
   calibrateJoyCenter();  
   
-  // Set up mouse on both sides
-  if (!cfg.linux_mode) mouse = new MouseDevice();
 
   USBSerial.println("Using VID source: " + String(hostConfig.getVidSource(), HEX));
   USBSerial.println("Using VID: " + String(hostConfig.getVid(), HEX));
@@ -718,25 +727,31 @@ void setup() {
   analogSetPinAttenuation(cfg.joyX, ADC_11db);  // Enable full 0–3.3V range
   analogSetPinAttenuation(cfg.joyY, ADC_11db);
 
-  // Add the mouse
-  if (!cfg.linux_mode) compositeHID->addDevice(mouse);
-
+  // set ble version information to firmware version number
   hostConfig.setFirmwareRevision(FW_VERSION_FULL_STR);
   if (cfg.right_not_left) {
     if (!cfg.linux_mode) {
-    // right is gamepad
+      // right is gamepad
 
-    //gamepad->resetButtons();
-    xbox_gamepad->resetInputs();
+      //gamepad->resetButtons();
+      xbox_gamepad->resetInputs();
 
-    // Add all child devices to the top-level composite HID device to manage them
-    compositeHID->addDevice(xbox_gamepad);
+      // Add all child devices to the top-level composite HID device to manage them
+      compositeHID->addDevice(xbox_gamepad);
     }
     else {
       generic_gamepad->resetButtons();
       compositeHID->addDevice(generic_gamepad);
     }
   }
+
+  // Add the mouse
+  // Set up mouse on both sides
+  if (!cfg.linux_mode) {
+    mouse = new MouseDevice(); 
+    compositeHID->addDevice(mouse);
+  }
+
 
   esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
   compositeHID->begin(hostConfig);
@@ -756,8 +771,6 @@ void setup() {
     tmouse.invertY = true;
     tmouse.invertScrollV = true;   // "natural" scroll feel
     tmouse.invertScrollH = false;
-
-
   }
   else {
     // invert axes if needed
@@ -766,6 +779,7 @@ void setup() {
     tmouse.invertScrollV = false;   // "natural" scroll feel
     tmouse.invertScrollH = true;
   }
+
   if (!cfg.linux_mode) {
     TM_Callbacks cb{};
     cb.move = MouseMove;

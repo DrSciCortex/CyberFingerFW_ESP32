@@ -98,16 +98,18 @@ void GamepadMerged::merge_() {
   cur_ = m;
 }
 
-void GamepadMerged::press_(uint16_t hidBit)   { if (gamepad_) gamepad_->press(hidBit); }
-void GamepadMerged::release_(uint16_t hidBit) { if (gamepad_) gamepad_->release(hidBit); }
+void GamepadMerged::press_(uint16_t hidBit)   { if (gamepad_) gamepad_->press(hidBit); USBSerial.println("Button pressed"+String(hidBit));}
+void GamepadMerged::release_(uint16_t hidBit) { if (gamepad_) gamepad_->release(hidBit); USBSerial.println("Button released"+String(hidBit));}
 
 // ---- Adapter points for gamepad API ----
 
 void GamepadMerged::setLeftThumb_(int16_t x, int16_t y) {
+  USBSerial.println("LeftThumb"+String(x)+" "+String(y));
   if (gamepad_) gamepad_->setLeftThumb(x, y);
 }
 
 void GamepadMerged::setRightThumb_(int16_t x, int16_t y) {
+  USBSerial.println("RightThumb"+String(x)+" "+String(y));
   if (gamepad_) gamepad_->setRightThumb(x, y);
 }
 
@@ -216,6 +218,7 @@ bool GamepadMerged::buildLeftPacketIfChanged(HalfPacket &outPkt) {
 bool GamepadMerged::sendLeftPacketToRightIfChanged(const uint8_t peerMac[6]) {
   CyberPkt16 pkt{};
   if (!buildLeftPacketIfChanged(pkt.halfgamepad)) return false;
+  USBSerial.printf("gamepadmerged sending left to right");
 
   esp_err_t err = esp_now_send(peerMac, pkt.raw, sizeof(pkt.raw));
   if (err != ESP_OK) {
