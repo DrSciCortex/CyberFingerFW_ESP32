@@ -37,6 +37,7 @@
 #include "splash_images.h"
 #include "audio.h"
 #include "HWCDC.h"
+#include <Adafruit_DRV2605.h>
 
 
 HWCDC USBSerial;
@@ -94,6 +95,29 @@ void initQueue_old() {
     }
   }
 }
+
+// haptics
+
+Adafruit_DRV2605 drv;
+
+
+static void playEffect(uint8_t effectId) {
+  // Sequence slots 0..7, 0 terminates
+  drv.setWaveform(0, effectId);
+  drv.setWaveform(1, 0);
+  drv.go();
+}
+
+static void rtpBuzz(uint8_t strength, uint16_t ms) {
+  // Real-Time Playback: "strength" is 0..127-ish (implementation-dependent),
+  // higher = stronger vibration (up to what motor/driver can deliver).
+  drv.setMode(DRV2605_MODE_REALTIME);
+  drv.setRealtimeValue(strength);
+  delay(ms);
+  drv.setRealtimeValue(0);
+  drv.setMode(DRV2605_MODE_INTTRIG); // back to effect playback mode
+}
+
 
 
 // Joystick change threshold
@@ -778,6 +802,26 @@ void setup() {
   gfx->Display_Brightness((int)(MAX_BRIGHTNESS*0.5));
 
   #endif
+
+
+  if (!drv.begin()) {
+  USBSerial.println("DRV2605L not found on I2C (addr usually 0x5A). Check wiring.");
+  // Your motor is an ERM coin motor (2-wire DC). :contentReference[oaicite:1]{index=1}
+  drv.useERM();
+  // Pick an effect library (1..6). Library 1 is a common default.
+  drv.selectLibrary(1);
+  // Internal trigger: we call go() to play whatever is in the waveform slots.
+  drv.setMode(DRV2605_MODE_INTTRIG);
+
+  Serial.println("Playing a few effects...");
+  playEffect(1);   delay(250);   // "strong click" style (varies by library)
+  playEffect(47);  delay(300);   // "buzz" style (varies by library)
+    playEffect(1);      // "strong click" style (varies by library)
+  //playEffect(52);  delay(400);
+
+
+}
+
 
   if (cfg.right_not_left) {
     USBSerial.println("Start cyberfinger right device SUCCESS.");
