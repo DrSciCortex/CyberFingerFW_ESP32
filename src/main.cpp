@@ -501,8 +501,8 @@ void setup() {
 
   //USBSerial.println("Starting provisionOrLoad()");
   //USBSerial.flush();
-  provisionOrLoad(USBSerial, 500);
-  //provisionOrLoad(USBSerial, 750);
+  //provisionOrLoad(USBSerial, 500);
+  provisionOrLoad(USBSerial, 750);
   USBSerial.println("provisionOrLoad() completed.");
   USBSerial.flush();
 
@@ -1005,7 +1005,7 @@ void loop() {
     */
     
   }
-  vTaskDelay(2);
+  vTaskDelay(10);
 }
 
 
