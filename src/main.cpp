@@ -330,8 +330,8 @@ static void initEspNow(uint8_t (&mac)[6])
 
 
   // 3) Coexistence: prefer balanced or Wi-Fi (helps ESPNOW RX under BLE advertising)
-  esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
-  // or: esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
+  //esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+  esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
 
   // Either of these works:
   // esp_wifi_get_mac requires WiFi driver inited (mode set is enough)
@@ -363,19 +363,19 @@ static void initEspNow(uint8_t (&mac)[6])
 
   esp_now_peer_info_t peer{};
   memcpy(peer.peer_addr, cfg.peer_mac, 6);
-  //memcpy(peer.peer_addr, BCAST, 6);
   peer.channel = cfg.wifi_channel;
   peer.encrypt = false;         // Optional: set up PMK/LTK for encryption if you want
   //if (esp_now_add_peer(&peer) != ESP_OK) {
   //  USBSerial.println("Failed to add peer");
   //}
   ESP_ERROR_CHECK( esp_now_add_peer(&peer) );
-
-  // setup the callback queue
-  initQueue();
   
-  ESP_ERROR_CHECK( esp_now_register_recv_cb(onNowRecv) );
-
+  if (cfg.right_not_left) {
+    // setup the callback queue
+    initQueue();
+    ESP_ERROR_CHECK( esp_now_register_recv_cb(onNowRecv) );
+  }
+    
   // 6) “prime” to avoid any first-packet weirdness
   //uint8_t dummy[1] = {0};
   //for (int i=0;i<10;i++) { esp_now_send(cfg.peer_mac, dummy, sizeof(dummy)); delay(5); }
@@ -492,7 +492,7 @@ inline void applyRadialDeadzone(int16_t& x, int16_t& y, int16_t dz)
 
 void setup() {
   USBSerial.begin(115200);
-  USBSerial.setRxBufferSize(2048);
+  USBSerial.setRxBufferSize(3072);
   delay(100);  // give the host time to open the port
 
   //USBSerial.println();
