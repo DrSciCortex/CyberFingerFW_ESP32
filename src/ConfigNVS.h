@@ -27,8 +27,8 @@ struct Config {
 
   uint8_t peer_mac[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
   uint16_t wifi_channel = 6;
-  uint16_t esp_interval_us = 5000;
-  uint16_t stick_deadzone = 250;
+  uint16_t esp_interval_us = 10000;
+  uint16_t stick_deadzone = 1000;
   uint16_t trigger_deadzone = 2;
 
 };

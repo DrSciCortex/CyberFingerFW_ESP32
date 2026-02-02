@@ -131,7 +131,7 @@ bool provisionOrLoad(Stream &io, unsigned long windowMs) {
           // ignore leading CR/LF
         } else {
           out += c;
-          if (out.length() > 1024) return true; // safety cap
+          if (out.length() > 4096) return true; // safety cap
         }
       }
       delay(1);
