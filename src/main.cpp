@@ -285,7 +285,9 @@ static void onNowRecv(const esp_now_recv_info_t* info, const uint8_t* data, int 
       return;
   }
 
+  // time left and right is not synchronized
   //age_ms = (int32_t)(millis() - u.halfgamepad.ms);
+  //if (age_ms>20) return;
 
   // quick reject based on version/role (ver is u.raw[0], srcRole is u.raw[1])
   const uint8_t ver = u.raw[0];
@@ -315,7 +317,15 @@ static void onNowRecv(const esp_now_recv_info_t* info, const uint8_t* data, int 
 
   // put the message in the queue for processing in loop()
   BaseType_t higherWoken = pdFALSE;
-  xQueueSendFromISR(g_pkt_queue, &u, &higherWoken);
+  //xQueueSendFromISR(g_pkt_queue, &u, &higherWoken);
+  if (xQueueSendFromISR(g_pkt_queue, &u, &higherWoken) != pdTRUE) {
+    // Queue full → drop oldest
+    CyberPkt16 dummy;
+    xQueueReceiveFromISR(g_pkt_queue, &dummy, &higherWoken);
+
+    // Now there is guaranteed space
+    xQueueSendFromISR(g_pkt_queue, &u, &higherWoken);
+  }
   //xQueueOverwriteFromISR(g_pkt_queue, &(u.halfgamepad), &higherWoken);
   if (higherWoken) portYIELD_FROM_ISR();
 
@@ -355,7 +365,7 @@ static void initEspNow(uint8_t (&mac)[6])
 
   // 3) Coexistence: prefer balanced or Wi-Fi (helps ESPNOW RX under BLE advertising)
   esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
-  // or: esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
+  //esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
 
   // Either of these works:
   // esp_wifi_get_mac requires WiFi driver inited (mode set is enough)
@@ -399,6 +409,7 @@ static void initEspNow(uint8_t (&mac)[6])
   initQueue();
   
   ESP_ERROR_CHECK( esp_now_register_recv_cb(onNowRecv) );
+
 
   // 6) “prime” to avoid any first-packet weirdness
   //uint8_t dummy[1] = {0};
@@ -526,7 +537,7 @@ void setup() {
   //USBSerial.println("Starting provisionOrLoad()");
   //USBSerial.flush();
   //provisionOrLoad(USBSerial, 500);
-  provisionOrLoad(USBSerial, 750);
+  provisionOrLoad(USBSerial, 800);
   USBSerial.println("provisionOrLoad() completed.");
   USBSerial.flush();
 
@@ -1049,7 +1060,9 @@ void loop() {
     */
     
   }
-  vTaskDelay(10);
+  if (cfg.right_not_left) vTaskDelay(20);
+  else vTaskDelay(5);
+  //else vTaskDelay(std::min((uint16_t)(cfg.esp_interval_us/1000), (uint16_t)5));
 }
 
 
