@@ -816,24 +816,22 @@ void setup() {
   #endif
 
   #ifdef HAS_HAPTICS
-  if (!drv.begin()) {
-  USBSerial.println("DRV2605L not found on I2C (addr usually 0x5A). Check wiring.");
-  // Your motor is an ERM coin motor (2-wire DC). :contentReference[oaicite:1]{index=1}
-  drv.useERM();
-  // Pick an effect library (1..6). Library 1 is a common default.
-  drv.selectLibrary(1);
-  // Internal trigger: we call go() to play whatever is in the waveform slots.
-  drv.setMode(DRV2605_MODE_INTTRIG);
+    if (!drv.begin()) {
+    USBSerial.println("DRV2605L not found on I2C (addr usually 0x5A). Check wiring.");
+    // Your motor is an ERM coin motor (2-wire DC). :contentReference[oaicite:1]{index=1}
+    drv.useERM();
+    // Pick an effect library (1..6). Library 1 is a common default.
+    drv.selectLibrary(1);
+    // Internal trigger: we call go() to play whatever is in the waveform slots.
+    drv.setMode(DRV2605_MODE_INTTRIG);
 
-  Serial.println("Playing a few effects...");
-  playEffect(1);   delay(250);   // "strong click" style (varies by library)
-  playEffect(47);  delay(300);   // "buzz" style (varies by library)
-    playEffect(1);      // "strong click" style (varies by library)
-  //playEffect(52);  delay(400);
+    Serial.println("Playing a few effects...");
+    playEffect(1);   delay(250);   // "strong click" style (varies by library)
+    playEffect(47);  delay(300);   // "buzz" style (varies by library)
+      playEffect(1);      // "strong click" style (varies by library)
+    //playEffect(52);  delay(400);
+  }
   #endif // HAS_HAPTICS
-  
-}
-
 
   if (cfg.right_not_left) {
     USBSerial.println("Start cyberfinger right device SUCCESS.");
