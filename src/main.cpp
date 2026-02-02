@@ -37,6 +37,7 @@
 #include "splash_images.h"
 #include "audio.h"
 #include "HWCDC.h"
+#include <Adafruit_DRV2605.h>
 
 
 HWCDC USBSerial;
@@ -95,6 +96,29 @@ void initQueue_old() {
   }
 }
 
+#ifdef HAS_HAPTICS
+// haptics
+
+Adafruit_DRV2605 drv;
+
+
+static void playEffect(uint8_t effectId) {
+  // Sequence slots 0..7, 0 terminates
+  drv.setWaveform(0, effectId);
+  drv.setWaveform(1, 0);
+  drv.go();
+}
+
+static void rtpBuzz(uint8_t strength, uint16_t ms) {
+  // Real-Time Playback: "strength" is 0..127-ish (implementation-dependent),
+  // higher = stronger vibration (up to what motor/driver can deliver).
+  drv.setMode(DRV2605_MODE_REALTIME);
+  drv.setRealtimeValue(strength);
+  delay(ms);
+  drv.setRealtimeValue(0);
+  drv.setMode(DRV2605_MODE_INTTRIG); // back to effect playback mode
+}
+#endif // HAS_HAPTICS
 
 // Joystick change threshold
 //const uint16_t JOYSTICK_DEADZONE = 250;
@@ -261,7 +285,9 @@ static void onNowRecv(const esp_now_recv_info_t* info, const uint8_t* data, int 
       return;
   }
 
+  // time left and right is not synchronized
   //age_ms = (int32_t)(millis() - u.halfgamepad.ms);
+  //if (age_ms>20) return;
 
   // quick reject based on version/role (ver is u.raw[0], srcRole is u.raw[1])
   const uint8_t ver = u.raw[0];
@@ -291,7 +317,15 @@ static void onNowRecv(const esp_now_recv_info_t* info, const uint8_t* data, int 
 
   // put the message in the queue for processing in loop()
   BaseType_t higherWoken = pdFALSE;
-  xQueueSendFromISR(g_pkt_queue, &u, &higherWoken);
+  //xQueueSendFromISR(g_pkt_queue, &u, &higherWoken);
+  if (xQueueSendFromISR(g_pkt_queue, &u, &higherWoken) != pdTRUE) {
+    // Queue full → drop oldest
+    CyberPkt16 dummy;
+    xQueueReceiveFromISR(g_pkt_queue, &dummy, &higherWoken);
+
+    // Now there is guaranteed space
+    xQueueSendFromISR(g_pkt_queue, &u, &higherWoken);
+  }
   //xQueueOverwriteFromISR(g_pkt_queue, &(u.halfgamepad), &higherWoken);
   if (higherWoken) portYIELD_FROM_ISR();
 
@@ -331,7 +365,7 @@ static void initEspNow(uint8_t (&mac)[6])
 
   // 3) Coexistence: prefer balanced or Wi-Fi (helps ESPNOW RX under BLE advertising)
   esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
-  // or: esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
+  //esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
 
   // Either of these works:
   // esp_wifi_get_mac requires WiFi driver inited (mode set is enough)
@@ -375,6 +409,7 @@ static void initEspNow(uint8_t (&mac)[6])
   initQueue();
   
   ESP_ERROR_CHECK( esp_now_register_recv_cb(onNowRecv) );
+
 
   // 6) “prime” to avoid any first-packet weirdness
   //uint8_t dummy[1] = {0};
@@ -502,7 +537,7 @@ void setup() {
   //USBSerial.println("Starting provisionOrLoad()");
   //USBSerial.flush();
   //provisionOrLoad(USBSerial, 500);
-  provisionOrLoad(USBSerial, 750);
+  provisionOrLoad(USBSerial, 800);
   USBSerial.println("provisionOrLoad() completed.");
   USBSerial.flush();
 
@@ -780,6 +815,26 @@ void setup() {
 
   #endif
 
+  #ifdef HAS_HAPTICS
+  if (!drv.begin()) {
+  USBSerial.println("DRV2605L not found on I2C (addr usually 0x5A). Check wiring.");
+  // Your motor is an ERM coin motor (2-wire DC). :contentReference[oaicite:1]{index=1}
+  drv.useERM();
+  // Pick an effect library (1..6). Library 1 is a common default.
+  drv.selectLibrary(1);
+  // Internal trigger: we call go() to play whatever is in the waveform slots.
+  drv.setMode(DRV2605_MODE_INTTRIG);
+
+  Serial.println("Playing a few effects...");
+  playEffect(1);   delay(250);   // "strong click" style (varies by library)
+  playEffect(47);  delay(300);   // "buzz" style (varies by library)
+    playEffect(1);      // "strong click" style (varies by library)
+  //playEffect(52);  delay(400);
+  #endif // HAS_HAPTICS
+  
+}
+
+
   if (cfg.right_not_left) {
     USBSerial.println("Start cyberfinger right device SUCCESS.");
     USBSerial.print("Right ESP-NOW sender MAC: "); 
@@ -1005,7 +1060,9 @@ void loop() {
     */
     
   }
-  vTaskDelay(10);
+  if (cfg.right_not_left) vTaskDelay(20);
+  else vTaskDelay(5);
+  //else vTaskDelay(std::min((uint16_t)(cfg.esp_interval_us/1000), (uint16_t)5));
 }
 
 
