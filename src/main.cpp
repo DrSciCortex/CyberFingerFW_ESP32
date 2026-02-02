@@ -96,6 +96,7 @@ void initQueue_old() {
   }
 }
 
+#ifdef HAS_HAPTICS
 // haptics
 
 Adafruit_DRV2605 drv;
@@ -117,8 +118,7 @@ static void rtpBuzz(uint8_t strength, uint16_t ms) {
   drv.setRealtimeValue(0);
   drv.setMode(DRV2605_MODE_INTTRIG); // back to effect playback mode
 }
-
-
+#endif // HAS_HAPTICS
 
 // Joystick change threshold
 //const uint16_t JOYSTICK_DEADZONE = 250;
@@ -815,7 +815,7 @@ void setup() {
 
   #endif
 
-
+  #ifdef HAS_HAPTICS
   if (!drv.begin()) {
   USBSerial.println("DRV2605L not found on I2C (addr usually 0x5A). Check wiring.");
   // Your motor is an ERM coin motor (2-wire DC). :contentReference[oaicite:1]{index=1}
@@ -830,8 +830,8 @@ void setup() {
   playEffect(47);  delay(300);   // "buzz" style (varies by library)
     playEffect(1);      // "strong click" style (varies by library)
   //playEffect(52);  delay(400);
-
-
+  #endif // HAS_HAPTICS
+  
 }
 
 
