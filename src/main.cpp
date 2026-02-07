@@ -70,7 +70,7 @@ volatile uint32_t txCount = 0;
 
 static uint32_t lastSendUs = 0;
 //constexpr uint32_t MIN_INTERVAL_US = 4000;
-constexpr uint32_t MAX_INTERVAL_US = 100000;
+constexpr uint32_t MAX_INTERVAL_US = 50000;
 
 // io expander present
 bool expander_present = false;
@@ -304,6 +304,7 @@ static void onNowRecv(const esp_now_recv_info_t* info, const uint8_t* data, int 
     }
   }
   else {
+    // Right→left not yet implemented
     return;
     if (role != CYBER_ROLE_RIGHT) {
       //USBSerial.println("ESP-NOW: ERROR Expected CYBER_ROLE_RIGHT. Dropping.");
@@ -364,9 +365,11 @@ static void initEspNow(uint8_t (&mac)[6])
 
 
   // 3) Coexistence: prefer balanced or Wi-Fi (helps ESPNOW RX under BLE advertising)
-  esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
-  //esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
-
+  if (cfg.right_not_left) {
+    esp_coex_preference_set(ESP_COEX_PREFER_BALANCE); // _WIFI does not work.
+  }
+  else esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+  
   // Either of these works:
   // esp_wifi_get_mac requires WiFi driver inited (mode set is enough)
   ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_STA, mac));
@@ -394,6 +397,7 @@ static void initEspNow(uint8_t (&mac)[6])
   // 5) (Re)init ESP-NOW cleanly after BLE has touched the controller
   esp_now_deinit(); // ignore error if not inited yet
   ESP_ERROR_CHECK( esp_now_init() );
+  //esp_wifi_config_espnow_rate(WIFI_IF_STA, WIFI_PHY_RATE_MCS7_LGI);
 
   esp_now_peer_info_t peer{};
   memcpy(peer.peer_addr, cfg.peer_mac, 6);
@@ -404,6 +408,15 @@ static void initEspNow(uint8_t (&mac)[6])
   //  USBSerial.println("Failed to add peer");
   //}
   ESP_ERROR_CHECK( esp_now_add_peer(&peer) );
+
+  /*This makes things worse
+  esp_now_rate_config_t rate_cfg = {};
+  rate_cfg.phymode = WIFI_PHY_MODE_HT20;
+  rate_cfg.rate = WIFI_PHY_RATE_MCS7_LGI;
+  rate_cfg.ersu = false;
+  rate_cfg.dcm = false;
+  ESP_ERROR_CHECK( esp_now_set_peer_rate_config(cfg.peer_mac, &rate_cfg) );
+  */
 
   // setup the callback queue
   initQueue();
@@ -527,7 +540,8 @@ inline void applyRadialDeadzone(int16_t& x, int16_t& y, int16_t dz)
 
 void setup() {
   USBSerial.begin(115200);
-  USBSerial.setRxBufferSize(2048);
+  //USBSerial.setRxBufferSize(2048);
+  USBSerial.setRxBufferSize(3072);
   delay(100);  // give the host time to open the port
 
   //USBSerial.println();
@@ -754,6 +768,8 @@ void setup() {
     compositeHID->addDevice(gamepad);
   }
 
+
+
   esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
   compositeHID->begin(hostConfig);
 
@@ -845,8 +861,11 @@ void setup() {
 }
 
 void loop() {
+  uint16_t loop_period_us = 10000; // 10ms - 100Hz
   bool changed = false;
   int32_t x, y, x2, y2;
+
+  uint32_t loop_start = micros();
 
   // check battery status
   static uint32_t last = -100000;
@@ -894,15 +913,13 @@ void loop() {
       tmouse.handleSampleMulti(num_fingers, y, x, y2, x2);
 
       if (x > 20 && y > 20) {
-          history[histIdx] = { int16_t(x), int16_t(y), millis() };
+          history[histIdx] = { int16_t(x), int16_t(y), micros() };
           histIdx = (histIdx + 1) % MAX_HISTORY;
       }
   }
   #endif
 
   // --- 2) redraw the entire frame from history ---
-
-
 
   #ifdef HAS_GFX
   if (!poweroff_notice && frame % BLACK_FRAME_COUNT == 0) {
@@ -911,7 +928,7 @@ void loop() {
   frame++;
 
 
-  uint32_t now = millis();
+  uint32_t now = micros();
 
   #ifdef HAS_TOUCH
 
@@ -925,7 +942,7 @@ void loop() {
     auto &pt = history[idx];
     if (pt.t == 0) continue;            // empty slot
 
-    uint32_t age = now - pt.t;
+    uint32_t age = (now - pt.t)/1000;
     if (age >= FADE_TIME_MS) {
       // final erase: draw black circle, then forget this entry
       gfx->fillCircle(pt.x, pt.y, RADIUS, BLACK);
@@ -1016,8 +1033,21 @@ void loop() {
   if (cfg.right_not_left) {
     gamepad_handler.setRightLocal(local);
     HalfPacket u;
-    while(xQueueReceive(g_pkt_queue, &u, 0) == pdTRUE) {
+
+    uint32_t elapsed = micros() - loop_start;
+    TickType_t max_wait_ms;
+    if (elapsed >= loop_period_us) {
+        max_wait_ms = 0; 
+    } else {
+        max_wait_ms = (loop_period_us - elapsed) / 1000;
+    }
+
+    if (xQueueReceive(g_pkt_queue, &u, pdMS_TO_TICKS(max_wait_ms)) == pdTRUE) {
       gamepad_handler.setLeftRemote(u);
+      // drain without waiting
+      while(xQueueReceive(g_pkt_queue, &u, 0) == pdTRUE) {
+        gamepad_handler.setLeftRemote(u);
+      }
     }
     if (compositeHID->isConnected()) gamepad_handler.updateAndSendIfChanged();
   }
@@ -1028,17 +1058,15 @@ void loop() {
 
     gamepad_handler.setLeftLocal(local);
 
-    // wait at least cfg.esp_interval_us before sending again
-    // wait no more than MAX_INTERVAL_US until sending again
-    uint32_t now = micros();
-    if ((now - lastSendUs) >= std::min(cfg.esp_interval_us, (uint16_t)1000)) {
-      if (gamepad_handler.sendLeftPacketToRightIfChanged(cfg.peer_mac)) {
-        lastSendUs = now;
-      } else if ((now - lastSendUs) >= MAX_INTERVAL_US) {
-        gamepad_handler.sendLeftPacketToRight(cfg.peer_mac);
-        lastSendUs = now;
-      }
+  // send if changed
+  // but wait no more than MAX_INTERVAL_US until sending again
+    if (gamepad_handler.sendLeftPacketToRightIfChanged(cfg.peer_mac)) {
+      lastSendUs = now;
+    } else if ((now - lastSendUs) >= MAX_INTERVAL_US) {
+      gamepad_handler.sendLeftPacketToRight(cfg.peer_mac);
+      lastSendUs = now;
     }
+
 
     /*
     while (xQueueReceive(g_pkt_queue, &u, 0) == pdTRUE) {
@@ -1058,8 +1086,16 @@ void loop() {
     */
     
   }
-  if (cfg.right_not_left) vTaskDelay(20);
-  else vTaskDelay(5);
+
+  uint32_t elapsed = micros() - loop_start;
+  TickType_t max_wait_ms;
+  if (elapsed >= loop_period_us) {
+      max_wait_ms = 0; 
+  } else {
+      max_wait_ms = (loop_period_us - elapsed) / 1000;
+  }
+  vTaskDelay(pdMS_TO_TICKS(max_wait_ms));
+
   //else vTaskDelay(std::min((uint16_t)(cfg.esp_interval_us/1000), (uint16_t)5));
 }
 
