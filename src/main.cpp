@@ -527,7 +527,8 @@ inline void applyRadialDeadzone(int16_t& x, int16_t& y, int16_t dz)
 
 void setup() {
   USBSerial.begin(115200);
-  USBSerial.setRxBufferSize(2048);
+  //USBSerial.setRxBufferSize(2048);
+  USBSerial.setRxBufferSize(3072);
   delay(100);  // give the host time to open the port
 
   //USBSerial.println();
