@@ -861,7 +861,9 @@ void setup() {
 }
 
 void loop() {
-  uint16_t loop_period_us = 10000; // 10ms - 100Hz
+  uint16_t loop_period_us;
+  if (cfg.right_not_left) loop_period_us = 10000;
+  else loop_period_us = 20000; // 10ms - 100Hz
   bool changed = false;
   int32_t x, y, x2, y2;
 
