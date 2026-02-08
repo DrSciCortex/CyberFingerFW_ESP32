@@ -16,13 +16,13 @@ void printFirmwareVersion() {
 // Semantic versioning
 #define FW_VERSION_MAJOR 1
 #define FW_VERSION_MINOR 0
-#define FW_VERSION_PATCH 0
+#define FW_VERSION_PATCH 1
 
 // Optional pre-release / metadata
 // Set to empty string "" for official releases
 #define FW_VERSION_SUFFIX "-beta"   // e.g. "-alpha", "-rc1", ""
 //#define FW_VERSION_BUILD  "2025-03-15"  // or git hash
-#define FW_VERSION_BUILD GIT_COMMIT_HASH
+#define FW_VERSION_BUILD STR(GIT_COMMIT_HASH)
 
 // Convenience macros
 #define STR_HELPER(x) #x

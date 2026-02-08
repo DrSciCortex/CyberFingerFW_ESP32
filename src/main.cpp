@@ -541,7 +541,7 @@ inline void applyRadialDeadzone(int16_t& x, int16_t& y, int16_t dz)
 void setup() {
   USBSerial.begin(115200);
   //USBSerial.setRxBufferSize(2048);
-  USBSerial.setRxBufferSize(3072);
+  USBSerial.setRxBufferSize(4096);
   delay(100);  // give the host time to open the port
 
   //USBSerial.println();
@@ -710,7 +710,7 @@ void setup() {
     // The composite HID device pretends to be a valid Xbox controller via vendor and product IDs (VID/PID).
     // Platforms like windows/linux need this in order to pick an XInput driver over the generic BLE GATT HID driver.
     hostConfig = config->getIdealHostConfiguration();
-    // report the correct firmware version
+
   
 
     // Set up gamepad
