@@ -70,7 +70,7 @@ volatile uint32_t txCount = 0;
 
 static uint32_t lastSendUs = 0;
 //constexpr uint32_t MIN_INTERVAL_US = 4000;
-constexpr uint32_t MAX_INTERVAL_US = 50000;
+constexpr uint32_t MAX_INTERVAL_US = 30000;
 
 // io expander present
 bool expander_present = false;
@@ -1036,28 +1036,19 @@ void loop() {
     gamepad_handler.setRightLocal(local);
     HalfPacket u;
 
-    uint32_t elapsed = micros() - loop_start;
-    TickType_t max_wait_ms;
-    if (elapsed >= loop_period_us) {
-        max_wait_ms = 0; 
-    } else {
-        max_wait_ms = (loop_period_us - elapsed) / 1000;
-    }
-
-    if (xQueueReceive(g_pkt_queue, &u, pdMS_TO_TICKS(max_wait_ms)) == pdTRUE) {
-      gamepad_handler.setLeftRemote(u);
-      // drain without waiting
-      while(xQueueReceive(g_pkt_queue, &u, 0) == pdTRUE) {
+    do {
+        uint32_t elapsed = micros() - loop_start;
+        TickType_t remain = (elapsed < loop_period_us) 
+            ? (loop_period_us - elapsed) / 1000 
+            : 0;
+        if (xQueueReceive(g_pkt_queue, &u, remain) != pdTRUE) break;
         gamepad_handler.setLeftRemote(u);
-      }
-    }
+    } while (true);
+
     if (compositeHID->isConnected()) gamepad_handler.updateAndSendIfChanged();
   }
   else {
     CyberPkt16 u;
-    //bool mouse_changed=false;
-    //int16_t  mx=0, my=0; 
-
     gamepad_handler.setLeftLocal(local);
 
   // send if changed
@@ -1069,23 +1060,26 @@ void loop() {
       lastSendUs = now;
     }
 
+    // poll buttons tightly for remainder of loop period
+    do {
+        uint32_t elapsed = micros() - loop_start;
+        if (elapsed >= loop_period_us) break;
 
-    /*
-    while (xQueueReceive(g_pkt_queue, &u, 0) == pdTRUE) {
-      // process all queued packets
-      // onNowRecv already checked version and source
-      if (u.mouse.buttons | BTN_MOUSE1_PRESS ) {mouse->mousePress(MOUSE_LOGICAL_LEFT_BUTTON); mouse_changed=true;}
-      if (u.mouse.buttons | BTN_MOUSE1_RELEASE ) {mouse->mouseRelease(MOUSE_LOGICAL_LEFT_BUTTON); mouse_changed=true;}
-      if (u.mouse.mx!=0 || u.mouse.my!=0) {mx+=u.mouse.mx; my+=u.mouse.my; mouse_changed=true;}
-    }
-    if (mx!=0 || my!=0) {
-      mouse->mouseMove(mx, my);
-      mouse_changed=true;
-    }
-    else mouse->mouseMove(0,0);
+        TickType_t remain = (loop_period_us - elapsed) / 1000;
+        if (remain > 0) vTaskDelay(1);
 
-    if (compositeHID->isConnected() && mouse_changed) mouse->sendMouseReport();
-    */
+        local.btnMask = 0;
+        local.btnMask |= (digitalRead(cfg.buttonAX) == LOW) ? PKT_AX : 0;
+        local.btnMask |= (digitalRead(cfg.buttonBY) == LOW) ? PKT_BY : 0;
+        local.btnMask |= (digitalRead(cfg.buttonST)  == LOW) ? PKT_ST  : 0;
+        local.btnMask |= (digitalRead(cfg.buttonBP)  == LOW) ? PKT_BP  : 0;
+        local.btnMask |= (digitalRead(cfg.buttonStartSelect) == LOW) ? PKT_STARTSELECT : 0;
+
+        gamepad_handler.setLeftLocal(local);  // joystick unchanged, buttons updated
+        if (gamepad_handler.sendLeftPacketToRightIfChanged(cfg.peer_mac)) {
+            lastSendUs = micros();
+        }
+    } while (true);
     
   }
 
