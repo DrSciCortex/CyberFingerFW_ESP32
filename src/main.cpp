@@ -310,7 +310,7 @@ void switchOpMode(bool playsound=true) {
 
   // Audio/visual feedback
   #ifdef HAS_SOUND
-  if (cfg.play_sound && playsound) play_sound(vrDirectMode ? SOUND_BOOT : SOUND_SHUTDOWN, 500);
+  if (cfg.play_sound && playsound) play_sound(vrDirectMode ? SOUND_VR : SOUND_GAMING, 500);
   #endif
   #ifdef HAS_GFX
   gfx->fillScreen(BLACK);
