@@ -249,9 +249,27 @@ int frame; // count frames, black screen reset after BLACK_FRAME_COUNT
 uint16_t joyCenterRawX;
 uint16_t joyCenterRawY;
 
+// Subclass BleCompositeHID to hook into onStarted
+class CyberFingerBLE : public BleCompositeHID {
+public:
+    bool isRight = false;
+
+    // Forward all constructors
+    using BleCompositeHID::BleCompositeHID;
+    
+    void onStarted(NimBLEServer* pServer) override {
+        USBSerial.println("[BLE] onStarted — adding VR GATT service");
+        if (!vrGattInit(pServer, isRight)) {
+            USBSerial.println("[BLE] WARNING: VR GATT service init failed");
+        } else {
+            USBSerial.println("[BLE] VR GATT service added successfully");
+        }
+    }
+};
+
 XboxGamepadDevice *gamepad;
 MouseDevice *mouse;
-BleCompositeHID *compositeHID;
+CyberFingerBLE *compositeHID;
 
 //previous power button state
 int prevPower = LOW;
@@ -746,7 +764,8 @@ void setup() {
         ? "CyberFinger-right-v1b(XboxSX)"
         : "CyberFinger-left-v1b(Mouse)";
   
-  compositeHID = new BleCompositeHID(devName, "SciCortex Technologies Corp.", 100);
+  compositeHID = new CyberFingerBLE(devName, "SciCortex Technologies Corp.", 100);
+  compositeHID->isRight = cfg.right_not_left;
 
   BLEHostConfiguration hostConfig;
 
@@ -837,16 +856,6 @@ void setup() {
 
   if (vrDirectMode) USBSerial.println("mode: VR direct");
   else USBSerial.println("mode: classic gamepad");
-
-    // Initialize VR Direct Mode GATT service
-  // This adds a custom BLE service alongside the existing HID services.
-  // The bridge app on PC will discover this service and subscribe to
-  // notifications when VR mode is active.
-  NimBLEServer* bleServer = NimBLEDevice::getServer();
-  if (!vrGattInit(bleServer, cfg.right_not_left)) {
-      USBSerial.println("WARNING: VR GATT service init failed");
-  } else USBSerial.println("VR GATT service init success");
-
 
   if (cfg.right_not_left) {
     // invert axes if needed
