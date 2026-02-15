@@ -20,6 +20,7 @@
 #include <BleCompositeHID.h>
 #include <XboxGamepadDevice.h>
 #include <MouseDevice.h>
+#include <NimBLEDevice.h>
 
 #include <WiFi.h>
 #include <esp_now.h>
@@ -243,6 +244,40 @@ void OnVibrateEvent(XboxGamepadOutputReportData data) {
   //USBSerial.println("Vibration event. Weak motor: " + String(data.weakMotorMagnitude) + " Strong motor: " + String(data.strongMotorMagnitude));
 }
 
+void diag_wifi() {
+
+  // At the very end of setup():
+  USBSerial.println("=== Boot diagnostics ===");
+  uint8_t ch = 0;
+  wifi_second_chan_t sc;
+  esp_wifi_get_channel(&ch, &sc);
+  USBSerial.printf("WiFi channel: %d (expected %d)\n", ch, cfg.wifi_channel);
+
+  wifi_mode_t mode;
+  esp_wifi_get_mode(&mode);
+  USBSerial.printf("WiFi mode: %d\n", (int)mode);
+
+  uint8_t protocol;
+  esp_wifi_get_protocol(WIFI_IF_STA, &protocol);
+  USBSerial.printf("WiFi protocol: 0x%02X\n", protocol);
+
+  wifi_ps_type_t ps;
+  esp_wifi_get_ps(&ps);
+  USBSerial.printf("Power save: %d (expect 0)\n", (int)ps);
+
+  esp_now_peer_num_t peerNum;
+  esp_now_get_peer_num(&peerNum);
+  USBSerial.printf("ESP-NOW peers: total=%d, encrypted=%d\n", peerNum.total_num, peerNum.encrypt_num);
+
+  USBSerial.printf("Peer MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
+      cfg.peer_mac[0], cfg.peer_mac[1], cfg.peer_mac[2],
+      cfg.peer_mac[3], cfg.peer_mac[4], cfg.peer_mac[5]);
+  USBSerial.println("========================");
+
+
+
+}
+
 int frame; // count frames, black screen reset after BLACK_FRAME_COUNT 
 
 uint16_t joyCenterRawX;
@@ -418,11 +453,13 @@ static void initEspNow(uint8_t (&mac)[6])
   ESP_ERROR_CHECK( esp_now_set_peer_rate_config(cfg.peer_mac, &rate_cfg) );
   */
 
-  // setup the callback queue
-  initQueue();
-  
-  ESP_ERROR_CHECK( esp_now_register_recv_cb(onNowRecv) );
 
+  initQueue();
+  if (cfg.right_not_left) {
+      // setup the callback queue
+      ESP_ERROR_CHECK( esp_now_register_recv_cb(onNowRecv) );
+
+  }
 
   // 6) “prime” to avoid any first-packet weirdness
   //uint8_t dummy[1] = {0};
@@ -779,6 +816,8 @@ void setup() {
     gamepad->sendGamepadReport();
   }
 
+  // prevent a possible race between BLE and wifi
+  delay(200);
   // Start comm with left/right
   initEspNow(mac);
 
@@ -849,6 +888,35 @@ void setup() {
   }
   #endif // HAS_HAPTICS
 
+// At the very end of setup():
+USBSerial.println("=== Boot diagnostics ===");
+uint8_t ch = 0;
+wifi_second_chan_t sc;
+esp_wifi_get_channel(&ch, &sc);
+USBSerial.printf("WiFi channel: %d (expected %d)\n", ch, cfg.wifi_channel);
+
+wifi_mode_t mode;
+esp_wifi_get_mode(&mode);
+USBSerial.printf("WiFi mode: %d\n", (int)mode);
+
+uint8_t protocol;
+esp_wifi_get_protocol(WIFI_IF_STA, &protocol);
+USBSerial.printf("WiFi protocol: 0x%02X\n", protocol);
+
+wifi_ps_type_t ps;
+esp_wifi_get_ps(&ps);
+USBSerial.printf("Power save: %d (expect 0)\n", (int)ps);
+
+esp_now_peer_num_t peerNum;
+esp_now_get_peer_num(&peerNum);
+USBSerial.printf("ESP-NOW peers: total=%d, encrypted=%d\n", peerNum.total_num, peerNum.encrypt_num);
+
+USBSerial.printf("Peer MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
+    cfg.peer_mac[0], cfg.peer_mac[1], cfg.peer_mac[2],
+    cfg.peer_mac[3], cfg.peer_mac[4], cfg.peer_mac[5]);
+USBSerial.println("========================");
+
+
   if (cfg.right_not_left) {
     USBSerial.println("Start cyberfinger right device SUCCESS.");
     USBSerial.print("Right ESP-NOW sender MAC: "); 
@@ -868,6 +936,34 @@ void loop() {
   int32_t x, y, x2, y2;
 
   uint32_t loop_start = micros();
+
+  static uint32_t lastDump = 0;
+  if (millis() - lastDump > 5000) {
+      lastDump = millis();
+      dump_wifi_state("LEFT-LOOP");
+  }
+
+  // In loop, once connected:
+  static bool connUpdated = false;
+  bool connected = compositeHID->isConnected();
+  if (connected && !connUpdated) {
+      NimBLEServer* srv = NimBLEDevice::getServer();
+      if (srv && srv->getConnectedCount() > 0) {
+          // Request wider interval: 30-50ms instead of default 7.5-15ms
+          // Fewer BLE events = more airtime for ESP-NOW
+          srv->updateConnParams(
+              srv->getPeerInfo(0).getAddress(),
+              24,   // min: 30ms
+              40,   // max: 50ms  
+              0,    // latency
+              400   // supervision timeout: 4s
+          );
+          connUpdated = true;
+          USBSerial.println("BLE conn params updated: 30-50ms interval");
+      }
+  } else if (!connected) {
+    connUpdated = false; 
+  }
 
   // check battery status
   static uint32_t last = -100000;
@@ -1091,6 +1187,8 @@ void loop() {
       max_wait_ms = (loop_period_us - elapsed) / 1000;
   }
   vTaskDelay(pdMS_TO_TICKS(max_wait_ms));
+
+
 
   //else vTaskDelay(std::min((uint16_t)(cfg.esp_interval_us/1000), (uint16_t)5));
 }
