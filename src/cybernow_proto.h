@@ -12,7 +12,11 @@
 #define CYBER_ROLE_LEFT  0
 #define CYBER_ROLE_RIGHT 1
 
-enum CYBER_PROTO_VER : uint8_t { CYBER_PROTO_MOUSE = 1, CYBER_PROTO_HALFGAMEPAD = 2 };
+enum CYBER_PROTO_VER : uint8_t {
+    CYBER_PROTO_MOUSE        = 1,
+    CYBER_PROTO_HALFGAMEPAD  = 2,
+    CYBER_PROTO_MODESWITCH   = 3,   // NEW: mode toggle command
+};
 
 // Choose a fixed 2.4GHz channel for ESP-NOW (both must match); 1, 6 or 11 are common
 #define CYBER_WIFI_CHANNEL 6
@@ -37,14 +41,25 @@ typedef struct __attribute__((packed)) {
     uint16_t reserved; // pad to 16 bytes (or use for wheel/flags later)
    } CyberNowPkt;
 
+// NEW: Mode switch packet — sent over ESP-NOW to toggle VR direct mode
+typedef struct __attribute__((packed)) {
+    uint8_t  ver;        // CYBER_PROTO_MODESWITCH
+    uint8_t  srcRole;    // who sent it (typically LEFT)
+    uint16_t seq;
+    uint32_t ms;
+    uint8_t  newMode;    // 0 = gamepad (normal), 1 = vr_direct
+    uint8_t  reserved[7];
+} CyberModeSwitchPkt;
 
 union CyberPkt16 {
-  uint8_t     raw[16];
-  HalfPacket  halfgamepad;
-  CyberNowPkt mouse;
+  uint8_t          raw[16];
+  HalfPacket       halfgamepad;
+  CyberNowPkt      mouse;
+  CyberModeSwitchPkt modeswitch;
 };
 
 static_assert(sizeof(HalfPacket)  == sizeof(CyberNowPkt), "HalfPacket must be same size as CyberNowPkt");
+static_assert(sizeof(CyberModeSwitchPkt) == 16, "CyberModeSwitchPkt must be 16 bytes");
 static_assert(sizeof(HalfPacket)  == 16, "HalfPacket must be size = 16");
 
 static inline bool parseCyberPkt(CyberPkt16 &u, const uint8_t* data, int len) {
@@ -52,4 +67,3 @@ static inline bool parseCyberPkt(CyberPkt16 &u, const uint8_t* data, int len) {
   memcpy(u.raw, data, 16);          // safe load (alignment-proof)
   return true;
 }
-

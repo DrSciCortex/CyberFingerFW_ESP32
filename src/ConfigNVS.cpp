@@ -42,6 +42,7 @@ void loadConfigFromNVS() {
   cfg.stick_deadzone = prefs.getUInt("stick_deadzn", cfg.stick_deadzone);
   cfg.trigger_deadzone = prefs.getUInt("trigger_deadzn", cfg.trigger_deadzone);
   cfg.esp_interval_us = prefs.getUInt("esp_interval", cfg.esp_interval_us);
+  cfg.op_mode = prefs.getUInt("op_mode", cfg.op_mode);
   if (prefs.getBytesLength("peer_mac") == 6) {
     prefs.getBytes("peer_mac", cfg.peer_mac, 6);
   }
@@ -66,7 +67,14 @@ void saveConfigToNVS() {
   prefs.putUInt("stick_deadzn",  cfg.stick_deadzone);
   prefs.putUInt("trigger_deadzn",  cfg.trigger_deadzone);
   prefs.putUInt("esp_interval",  cfg.esp_interval_us);
+  prefs.putUInt("op_mode",  cfg.op_mode);
   prefs.putBytes("peer_mac", cfg.peer_mac, 6);
+  prefs.end();
+}
+
+void saveOpModeToNVS() {
+  prefs.begin("cfg", false);
+  prefs.putUInt("op_mode",  cfg.op_mode);
   prefs.end();
 }
 
@@ -100,6 +108,7 @@ bool applyJsonToConfig(const String& jsonLine, String& errMsg) {
     if (config.containsKey("right_not_left")) cfg.right_not_left = config["right_not_left"];
     if (config.containsKey("stick_deadzone")) cfg.stick_deadzone = config["stick_deadzone"];
     if (config.containsKey("trigger_deadzone")) cfg.trigger_deadzone = config["trigger_deadzone"];
+    if (config.containsKey("op_mode")) cfg.op_mode = config["op_mode"];
   }
 
   if (doc.containsKey("espnow_peer")) {
@@ -230,6 +239,7 @@ String configToJsonString() {
   config["right_not_left"] = cfg.right_not_left;
   config["stick_deadzone"] = cfg.stick_deadzone;
   config["trigger_deadzone"] = cfg.trigger_deadzone;
+  config["op_mode"] = cfg.op_mode;
 
   char macStr[18];
   snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
