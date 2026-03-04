@@ -9,6 +9,8 @@
 enum SoundId : int {
     SOUND_BOOT = 0,
     SOUND_SHUTDOWN,
+    SOUND_VR,
+    SOUND_GAMING,
     SOUND_COUNT
 };
 

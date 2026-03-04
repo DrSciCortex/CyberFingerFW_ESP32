@@ -31,6 +31,8 @@ struct Config {
   uint16_t stick_deadzone = 1000;
   uint16_t trigger_deadzone = 2;
 
+  uint8_t op_mode=0;
+
 };
 
 // global instance
@@ -39,6 +41,7 @@ extern Config cfg;
 // functions
 void loadConfigFromNVS();
 void saveConfigToNVS();
+void saveOpModeToNVS();
 void printConfigJson(Stream &out);
 bool applyJsonToConfig(const String& jsonLine, String& errMsg);
 

@@ -36,6 +36,7 @@
 
 #include "splash_images.h"
 #include "audio.h"
+#include "vr_gatt.h"
 #include "HWCDC.h"
 #include <Adafruit_DRV2605.h>
 
@@ -248,14 +249,38 @@ int frame; // count frames, black screen reset after BLACK_FRAME_COUNT
 uint16_t joyCenterRawX;
 uint16_t joyCenterRawY;
 
+// Subclass BleCompositeHID to hook into onStarted
+class CyberFingerBLE : public BleCompositeHID {
+public:
+    bool isRight = false;
+
+    // Forward all constructors
+    using BleCompositeHID::BleCompositeHID;
+    
+    void onStarted(NimBLEServer* pServer) override {
+        USBSerial.println("[BLE] onStarted — adding VR GATT service");
+        if (!vrGattInit(pServer, isRight)) {
+            USBSerial.println("[BLE] WARNING: VR GATT service init failed");
+        } else {
+            USBSerial.println("[BLE] VR GATT service added successfully");
+        }
+    }
+};
+
 XboxGamepadDevice *gamepad;
 MouseDevice *mouse;
-BleCompositeHID *compositeHID;
+CyberFingerBLE *compositeHID;
 
 //previous power button state
 int prevPower = LOW;
 uint32_t time_powerpress = millis()+1000000;
 bool poweroff_notice = false;
+
+// VR Direct Mode state — when true, gamepad HID is suppressed and
+// button/joy data is sent via BLE GATT to the PC bridge.
+volatile bool vrDirectMode = false;
+static uint8_t g_batteryPct = 100;
+volatile bool g_remoteModeSwitchPending = false;
 
 ESP_IOExpander *expander = nullptr;
 
@@ -269,6 +294,39 @@ void Arduino_IIC_Touch_Interrupt(void);
 
 void Arduino_IIC_Touch_Interrupt(void) {
   FT3168->IIC_Interrupt_Flag = true;
+}
+
+void switchOpMode(bool playsound=true) {
+
+  cfg.op_mode = vrDirectMode ? 1 : 0;
+  saveOpModeToNVS();
+
+  // On mode switch, if we're the right side entering gamepad mode,
+  // reset the gamepad to a clean state
+  if (!vrDirectMode && cfg.right_not_left && gamepad) {
+      gamepad->resetInputs();
+      gamepad->sendGamepadReport();
+  }
+
+  // Audio/visual feedback
+  #ifdef HAS_SOUND
+  if (cfg.play_sound && playsound) play_sound(vrDirectMode ? SOUND_VR : SOUND_GAMING, 500);
+  #endif
+  #ifdef HAS_GFX
+  gfx->fillScreen(BLACK);
+  gfx->setTextColor(WHITE);
+  gfx->setTextSize(3);
+  // Center text on screen
+  const char* modeText = vrDirectMode ? "VR MODE" : "GAMEPAD";
+  int16_t tx, ty;
+  uint16_t tw, th;
+  gfx->getTextBounds(modeText, 0, 0, &tx, &ty, &tw, &th);
+  gfx->setCursor((W - tw) / 2, (H - th) / 2);
+  gfx->println(modeText);
+  delay(1000);
+  gfx->fillScreen(BLACK);
+  #endif
+
 }
 
 static void onNowRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len)
@@ -292,6 +350,16 @@ static void onNowRecv(const esp_now_recv_info_t* info, const uint8_t* data, int 
   // quick reject based on version/role (ver is u.raw[0], srcRole is u.raw[1])
   const uint8_t ver = u.raw[0];
   const uint8_t role = u.raw[1];
+
+    // Handle mode switch packets (from either side)
+  if (ver == CYBER_PROTO_MODESWITCH) {
+    bool newMode = (u.modeswitch.newMode != 0);
+    if (newMode != vrDirectMode) {
+        vrDirectMode = newMode;
+        g_remoteModeSwitchPending = true;
+    }
+    return;  // consumed
+  }
 
   if (cfg.right_not_left) {
     if (role != CYBER_ROLE_LEFT) {
@@ -553,7 +621,10 @@ void setup() {
   //provisionOrLoad(USBSerial, 500);
   provisionOrLoad(USBSerial, 800);
   USBSerial.println("provisionOrLoad() completed.");
+  vrDirectMode = (cfg.op_mode == 1) ? true : false;
   USBSerial.flush();
+
+  
 
   Wire.begin(IIC_SDA, IIC_SCL);
   Wire.setClock(400000);
@@ -693,7 +764,8 @@ void setup() {
         ? "CyberFinger-right-v1b(XboxSX)"
         : "CyberFinger-left-v1b(Mouse)";
   
-  compositeHID = new BleCompositeHID(devName, "SciCortex Technologies Corp.", 100);
+  compositeHID = new CyberFingerBLE(devName, "SciCortex Technologies Corp.", 100);
+  compositeHID->isRight = cfg.right_not_left;
 
   BLEHostConfiguration hostConfig;
 
@@ -782,13 +854,15 @@ void setup() {
   // Start comm with left/right
   initEspNow(mac);
 
+  if (vrDirectMode) USBSerial.println("mode: VR direct");
+  else USBSerial.println("mode: classic gamepad");
+
   if (cfg.right_not_left) {
     // invert axes if needed
     tmouse.invertX = false;
     tmouse.invertY = true;
     tmouse.invertScrollV = true;   // "natural" scroll feel
     tmouse.invertScrollH = false;
-
 
   }
   else {
@@ -881,8 +955,18 @@ void loop() {
       pct = (uint8_t)power.getBatteryPercent();
       if (pct > 100) pct = 100; // just in case
     }
-
+    g_batteryPct = pct;  // store for VR GATT reports
     compositeHID->setBatteryLevel(pct);  // battery % to the host
+  }
+
+  // handle a pending remote mode switch request
+  if (g_remoteModeSwitchPending) {
+    g_remoteModeSwitchPending = false;
+    USBSerial.printf("[ESP-NOW] Operation Mode switch received: %s\n",
+            vrDirectMode ? "VR_DIRECT" : "GAMEPAD");
+    USBSerial.flush();
+    // false here -> don't play sound
+    switchOpMode(false);
   }
 
   // --- 1) handle any new touch and store it ---
@@ -973,16 +1057,42 @@ void loop() {
     if (currPower == HIGH) {
       USBSerial.println("Button Power pressed");
       time_powerpress = millis();
+
     } else {
       USBSerial.println("Button Power released");
+      uint32_t pressDuration = millis() - time_powerpress;
+
+      if (pressDuration < 2000) {
+        // ── Short press (<2s): Toggle VR Direct Mode ──
+        vrDirectMode = !vrDirectMode;
+        USBSerial.printf(">>> Local Operation Mode switch: %s\n", vrDirectMode ? "VR MODE" : "GAMEPAD");
+        USBSerial.flush();
+        switchOpMode();
+
+        // Notify the other device via ESP-NOW
+        CyberPkt16 modePkt{};
+        modePkt.modeswitch.ver     = CYBER_PROTO_MODESWITCH;
+        modePkt.modeswitch.srcRole = cfg.right_not_left ? CYBER_ROLE_RIGHT : CYBER_ROLE_LEFT;
+        modePkt.modeswitch.seq     = ++g_seq;
+        modePkt.modeswitch.ms      = millis();
+        modePkt.modeswitch.newMode = vrDirectMode ? 1 : 0;
+
+        // send mode switch msg to other side 3 times to increase chances it gets through.
+        for (int i = 0; i < 3; i++) {
+          esp_now_send(cfg.peer_mac, modePkt.raw, 16);
+          if (i < 2) delay(10);
+        }
+
+      } 
+      
       if (poweroff_notice) {
         #ifdef HAS_GFX
         gfx->fillScreen(BLACK);
         #endif //HAS_GFX
         poweroff_notice = false;
-      }        
-    }
-    prevPower = currPower;
+      }
+    }     
+    prevPower = currPower; 
   }
 
   // give user feedback already at 2s ... to anticipate a power-down at ~5s (hardware implements that)
@@ -1031,56 +1141,71 @@ void loop() {
   applyRadialDeadzone(joyX, joyY, cfg.stick_deadzone);
   local.jx = joyX;
   local.jy = joyY;
-  
-  if (cfg.right_not_left) {
-    gamepad_handler.setRightLocal(local);
-    HalfPacket u;
 
-    do {
-        uint32_t elapsed = micros() - loop_start;
-        TickType_t remain = (elapsed < loop_period_us) 
-            ? (loop_period_us - elapsed) / 1000 
-            : 0;
-        if (xQueueReceive(g_pkt_queue, &u, remain) != pdTRUE) break;
-        gamepad_handler.setLeftRemote(u);
-    } while (true);
+    if (vrDirectMode) {
+    // ── VR DIRECT MODE ──
+    // Each side independently sends its own data via BLE GATT.
+    // No ESP-NOW gamepad merge. No Xbox HID reports.
+    vrGattSendInput(local, g_batteryPct);
 
-    if (compositeHID->isConnected()) gamepad_handler.updateAndSendIfChanged();
-  }
-  else {
-    CyberPkt16 u;
-    gamepad_handler.setLeftLocal(local);
-
-  // send if changed
-  // but wait no more than MAX_INTERVAL_US until sending again
-    if (gamepad_handler.sendLeftPacketToRightIfChanged(cfg.peer_mac)) {
-      lastSendUs = now;
-    } else if ((now - lastSendUs) >= MAX_INTERVAL_US) {
-      gamepad_handler.sendLeftPacketToRight(cfg.peer_mac);
-      lastSendUs = now;
+    // Still respect loop timing
+    uint32_t elapsed = micros() - loop_start;
+    if (elapsed < loop_period_us) {
+        vTaskDelay(pdMS_TO_TICKS((loop_period_us - elapsed) / 1000));
     }
 
-    // poll buttons tightly for remainder of loop period
-    do {
-        uint32_t elapsed = micros() - loop_start;
-        if (elapsed >= loop_period_us) break;
+  } else {
+    // ── GAMEPAD MODE ── 
+    if (cfg.right_not_left) {
+      gamepad_handler.setRightLocal(local);
+      HalfPacket u;
 
-        TickType_t remain = (loop_period_us - elapsed) / 1000;
-        if (remain > 0) vTaskDelay(1);
+      do {
+          uint32_t elapsed = micros() - loop_start;
+          TickType_t remain = (elapsed < loop_period_us) 
+              ? (loop_period_us - elapsed) / 1000 
+              : 0;
+          if (xQueueReceive(g_pkt_queue, &u, remain) != pdTRUE) break;
+          gamepad_handler.setLeftRemote(u);
+      } while (true);
 
-        local.btnMask = 0;
-        local.btnMask |= (digitalRead(cfg.buttonAX) == LOW) ? PKT_AX : 0;
-        local.btnMask |= (digitalRead(cfg.buttonBY) == LOW) ? PKT_BY : 0;
-        local.btnMask |= (digitalRead(cfg.buttonST)  == LOW) ? PKT_ST  : 0;
-        local.btnMask |= (digitalRead(cfg.buttonBP)  == LOW) ? PKT_BP  : 0;
-        local.btnMask |= (digitalRead(cfg.buttonStartSelect) == LOW) ? PKT_STARTSELECT : 0;
+      if (compositeHID->isConnected()) gamepad_handler.updateAndSendIfChanged();
+    }
+    else {
+      CyberPkt16 u;
+      gamepad_handler.setLeftLocal(local);
 
-        gamepad_handler.setLeftLocal(local);  // joystick unchanged, buttons updated
-        if (gamepad_handler.sendLeftPacketToRightIfChanged(cfg.peer_mac)) {
-            lastSendUs = micros();
-        }
-    } while (true);
-    
+    // send if changed
+    // but wait no more than MAX_INTERVAL_US until sending again
+      if (gamepad_handler.sendLeftPacketToRightIfChanged(cfg.peer_mac)) {
+        lastSendUs = now;
+      } else if ((now - lastSendUs) >= MAX_INTERVAL_US) {
+        gamepad_handler.sendLeftPacketToRight(cfg.peer_mac);
+        lastSendUs = now;
+      }
+
+      // poll buttons tightly for remainder of loop period
+      do {
+          uint32_t elapsed = micros() - loop_start;
+          if (elapsed >= loop_period_us) break;
+
+          TickType_t remain = (loop_period_us - elapsed) / 1000;
+          if (remain > 0) vTaskDelay(1);
+
+          local.btnMask = 0;
+          local.btnMask |= (digitalRead(cfg.buttonAX) == LOW) ? PKT_AX : 0;
+          local.btnMask |= (digitalRead(cfg.buttonBY) == LOW) ? PKT_BY : 0;
+          local.btnMask |= (digitalRead(cfg.buttonST)  == LOW) ? PKT_ST  : 0;
+          local.btnMask |= (digitalRead(cfg.buttonBP)  == LOW) ? PKT_BP  : 0;
+          local.btnMask |= (digitalRead(cfg.buttonStartSelect) == LOW) ? PKT_STARTSELECT : 0;
+
+          gamepad_handler.setLeftLocal(local);  // joystick unchanged, buttons updated
+          if (gamepad_handler.sendLeftPacketToRightIfChanged(cfg.peer_mac)) {
+              lastSendUs = micros();
+          }
+      } while (true);
+      
+    }
   }
 
   uint32_t elapsed = micros() - loop_start;
