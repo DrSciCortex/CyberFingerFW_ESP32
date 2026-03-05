@@ -42,12 +42,6 @@ extern const uint8_t boot_pcm_start[] asm("_binary_src_assets_cyberboot_pcm_star
 extern const uint8_t boot_pcm_end[]   asm("_binary_src_assets_cyberboot_pcm_end");
 extern const uint8_t shutdown_pcm_start[] asm("_binary_src_assets_cybershutdown_pcm_start");
 extern const uint8_t shutdown_pcm_end[]   asm("_binary_src_assets_cybershutdown_pcm_end");
-extern const uint8_t VR_pcm_start[] asm("_binary_src_assets_VR_pcm_start");
-extern const uint8_t VR_pcm_end[]   asm("_binary_src_assets_VR_pcm_end");
-extern const uint8_t Gaming_pcm_start[] asm("_binary_src_assets_Gaming_pcm_start");
-extern const uint8_t Gaming_pcm_end[]   asm("_binary_src_assets_Gaming_pcm_end");
-
-
 
 struct PcmClip {
     const uint8_t* start;
@@ -58,8 +52,6 @@ struct PcmClip {
 const PcmClip kSoundClips[SOUND_COUNT] = {
     { boot_pcm_start,     boot_pcm_end     }, // SOUND_BOOT
     { shutdown_pcm_start, shutdown_pcm_end }, // SOUND_SHUTDOWN
-    { VR_pcm_start, VR_pcm_end }, // SOUND_VR
-    { Gaming_pcm_start, Gaming_pcm_end }, // SOUND_Gaming
 };
 
 volatile bool soundBusy = false;
