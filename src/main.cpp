@@ -57,10 +57,45 @@ XPowersPMU power;
 #define EXAMPLE_CHIP_CLASS(name, ...) _EXAMPLE_CHIP_CLASS(name, ##__VA_ARGS__)
 
 #define MAX_HISTORY     6
-#define FADE_TIME_MS  2500    // fade-out duration (2.5 s)
+#define FADE_TIME_MS  2500    // fade-out duration (2.5 s)
 #define RADIUS         5     // radius≈12 for ~25px diameter
 #define BLACK_FRAME_COUNT 200
 #define MAX_BRIGHTNESS 128 
+
+// ── LOW_POWER: screen sleep/wake using SH8601 hardware SLPIN/SLPOUT ────────
+// Display_Brightness(0) alone only kills the PWM backlight; the panel
+// oscillator and charge pump keep running.  displayOff()/displayOn() send
+// the actual SLPIN/SLPOUT commands for real power saving.
+// Screen goes to SLPIN after LOW_POWER_IDLE_MS ms of touch inactivity,
+// and wakes on the next touch event or when the shutdown notice fires.
+#ifdef LOW_POWER
+#define LOW_POWER_IDLE_MS  5000   // ms of inactivity before SLPIN
+
+static inline void lp_screen_off(Arduino_GFX *g) {
+#ifdef HAS_GFX
+  g->Display_Brightness(0);  // blank first so the panel blacks out cleanly
+  g->displayOff();            // → SH8601_C_SLPIN (stops oscillator + charge pump)
+#endif
+#ifdef HAS_SOUND
+  pa_off();
+#endif
+}
+
+static inline void lp_screen_on(Arduino_GFX *g, uint8_t brightness) {
+#ifdef HAS_GFX
+  g->displayOn();             // → SH8601_C_SLPOUT (driver inserts required delay)
+  g->Display_Brightness(brightness);
+#endif
+#ifdef HAS_SOUND
+  if (cfg.play_sound) pa_on();
+#endif
+}
+
+static bool     g_screenAsleep   = false; // true while SLPIN is active
+static uint32_t g_lastActivityMs = 0;     // millis() of last touch event
+static bool     g_shutdownWake   = false; // screen deliberately woken for shutdown notice
+#endif // LOW_POWER
+// ──────────────────────────────────────────────────────────────────────────
 
 // ESP Now mac
 uint8_t mac[6] = {0};
@@ -139,20 +174,26 @@ TouchMouse tmouse;
 
 // mouse callbacks
 static void MouseMove(int dx, int dy, void* user) {
+#ifndef LOW_POWER
   USBSerial.printf("MouseMove (%d, %d)\n", dx, dy);
+#endif
   ((MouseDevice*)user)->mouseMove(dx, dy);
   ((MouseDevice*)user)->sendMouseReport();
 }
 static void MouseButtonPress(uint8_t buttons, void* user) {
   if (buttons & TM_MOUSE_BTN_LEFT) {
+#ifndef LOW_POWER
     USBSerial.printf("MouseButtonPress");
+#endif
     ((MouseDevice*)user)->mousePress(MOUSE_LOGICAL_LEFT_BUTTON);
     ((MouseDevice*)user)->sendMouseReport();
   }
 }
 static void MouseButtonRelease(uint8_t buttons, void* user) {
   if (buttons & TM_MOUSE_BTN_LEFT) {
+#ifndef LOW_POWER
     USBSerial.printf("MouseButtonRelease");
+#endif
     ((MouseDevice*)user)->mouseRelease(MOUSE_LOGICAL_LEFT_BUTTON);
     ((MouseDevice*)user)->sendMouseReport();
   }
@@ -455,7 +496,7 @@ static void initEspNow(uint8_t (&mac)[6])
   ESP_ERROR_CHECK( esp_now_register_recv_cb(onNowRecv) );
 
 
-  // 6) “prime” to avoid any first-packet weirdness
+  // 6) "prime" to avoid any first-packet weirdness
   //uint8_t dummy[1] = {0};
   //for (int i=0;i<10;i++) { esp_now_send(cfg.peer_mac, dummy, sizeof(dummy)); delay(5); }
 }
@@ -840,6 +881,12 @@ void setup() {
     USBSerial.println("Start cyberfinger left device SUCCESS.");
    }
 
+  // LOW_POWER: seed idle timer from end of setup so the 5 s countdown
+  // starts after the full boot sequence (including boot_debug delay) ends.
+#ifdef LOW_POWER
+  g_lastActivityMs = millis();
+#endif
+
 }
 
 void loop() {
@@ -866,6 +913,18 @@ void loop() {
     g_batteryPct = pct;  // store for VR GATT reports
     compositeHID->setBatteryLevel(pct);  // battery % to the host
   }
+
+  // LOW_POWER: put screen to SLPIN after LOW_POWER_IDLE_MS of no touch.
+  // g_shutdownWake blocks this while the shutdown notice is showing.
+#ifdef LOW_POWER
+  if (!g_screenAsleep && !g_shutdownWake) {
+    if (millis() - g_lastActivityMs >= LOW_POWER_IDLE_MS) {
+      USBSerial.println("[LOW_POWER] Idle timeout — SLPIN.");
+      lp_screen_off(gfx);
+      g_screenAsleep = true;
+    }
+  }
+#endif // LOW_POWER
 
   // --- 1) handle any new touch and store it ---
   #ifdef HAS_TOUCH
@@ -894,9 +953,26 @@ void loop() {
           FT3168->Arduino_IIC_Touch::Value_Information::TOUCH2_COORDINATE_Y);
       }
 
+      // LOW_POWER: every touch resets the idle timer.
+      // If the screen was sleeping, wake it (SLPOUT) before forwarding to tmouse.
+      // Mouse HID events are always forwarded — they work fine with screen off.
+#ifdef LOW_POWER
+      g_lastActivityMs = millis();
+      if (g_screenAsleep) {
+        USBSerial.println("[LOW_POWER] Touch — SLPOUT.");
+        lp_screen_on(gfx, (int)(MAX_BRIGHTNESS * 0.5));
+        g_screenAsleep = false;
+      }
+#endif // LOW_POWER
+
       tmouse.handleSampleMulti(num_fingers, y, x, y2, x2);
 
+      // Only accumulate trail history when the screen is actually on
+#ifdef LOW_POWER
+      if (!g_screenAsleep && x > 20 && y > 20) {
+#else
       if (x > 20 && y > 20) {
+#endif
           history[histIdx] = { int16_t(x), int16_t(y), micros() };
           histIdx = (histIdx + 1) % MAX_HISTORY;
       }
@@ -906,6 +982,11 @@ void loop() {
   // --- 2) redraw the entire frame from history ---
 
   #ifdef HAS_GFX
+  // LOW_POWER: skip all drawing while the panel is in SLPIN
+#ifdef LOW_POWER
+  if (!g_screenAsleep)
+#endif
+  { // begin guarded draw block
   if (!poweroff_notice && frame % BLACK_FRAME_COUNT == 0) {
     gfx->fillScreen(BLACK);
   } 
@@ -941,6 +1022,7 @@ void loop() {
     }
   }
   #endif //HAS_TOUCH
+  } // end guarded draw block
   #endif //HAS_GFX
 
   //USBSerial.println("OnNowRecv pkt age="+String(age_ms));
@@ -971,6 +1053,14 @@ void loop() {
         gfx->fillScreen(BLACK);
         #endif //HAS_GFX
         poweroff_notice = false;
+
+        // LOW_POWER: shutdown cancelled — clear the wake guard and restart
+        // the idle timer. Screen will go to SLPIN on the next timeout tick.
+#ifdef LOW_POWER
+        g_shutdownWake   = false;
+        g_lastActivityMs = millis();
+        USBSerial.println("[LOW_POWER] Shutdown cancelled — idle timer restarted.");
+#endif // LOW_POWER
       }
     }     
     prevPower = currPower; 
@@ -980,6 +1070,18 @@ void loop() {
   if (currPower==HIGH && (millis() - time_powerpress)>2000) {
 
     if (!poweroff_notice) {
+      // LOW_POWER: wake screen + PA for the shutdown notice.
+      // g_shutdownWake blocks the idle timer while the button stays held.
+#ifdef LOW_POWER
+      if (!g_shutdownWake) {
+        g_shutdownWake = true;
+        if (g_screenAsleep) {
+          USBSerial.println("[LOW_POWER] Long press — SLPOUT for shutdown notice.");
+          lp_screen_on(gfx, (int)(MAX_BRIGHTNESS * 0.5));
+          g_screenAsleep = false;
+        }
+      }
+#endif // LOW_POWER
       #ifdef HAS_SOUND
       if (cfg.play_sound) play_sound(SOUND_SHUTDOWN, 1000);
       #endif
@@ -1036,6 +1138,3 @@ void loop() {
 
   //else vTaskDelay(std::min((uint16_t)(cfg.esp_interval_us/1000), (uint16_t)5));
 }
-
-
-
