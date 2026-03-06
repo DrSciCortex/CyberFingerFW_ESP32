@@ -84,6 +84,7 @@ static inline void lp_screen_off(Arduino_GFX *g) {
 static inline void lp_screen_on(Arduino_GFX *g, uint8_t brightness) {
 #ifdef HAS_GFX
   g->displayOn();             // → SH8601_C_SLPOUT (driver inserts required delay)
+  g->fillScreen(BLACK);       // clear GRAM noise before making the panel visible
   g->Display_Brightness(brightness);
 #endif
 #ifdef HAS_SOUND
