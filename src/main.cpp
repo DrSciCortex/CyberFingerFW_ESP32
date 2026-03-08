@@ -794,6 +794,9 @@ void setup() {
   //assign pins in the cfg to gpio behaviours
   pinMode(cfg.buttonAX, INPUT_PULLUP);
   pinMode(cfg.buttonBY, INPUT_PULLUP);
+  pinMode(cfg.buttonCZ, INPUT_PULLUP);
+  pinMode(cfg.buttonDD, INPUT_PULLUP);
+  pinMode(cfg.buttonEE, INPUT_PULLUP);
   pinMode(cfg.buttonST, INPUT_PULLUP);
   pinMode(cfg.buttonBP, INPUT_PULLUP);
   pinMode(cfg.buttonStartSelect, INPUT_PULLUP);
@@ -1099,6 +1102,9 @@ void loop() {
   local.btnMask = 0;
   local.btnMask |= (digitalRead(cfg.buttonAX) == LOW) ? PKT_AX : 0;
   local.btnMask |= (digitalRead(cfg.buttonBY) == LOW) ? PKT_BY : 0;
+  local.btnMask |= (digitalRead(cfg.buttonCZ) == LOW) ? PKT_CZ : 0;
+  local.btnMask |= (digitalRead(cfg.buttonDD) == LOW) ? PKT_DD : 0;
+  local.btnMask |= (digitalRead(cfg.buttonEE) == LOW) ? PKT_EE : 0;
   local.btnMask |= (digitalRead(cfg.buttonST)  == LOW) ? PKT_ST  : 0;
   local.btnMask |= (digitalRead(cfg.buttonBP)  == LOW) ? PKT_BP  : 0;
   local.btnMask |= (digitalRead(cfg.buttonStartSelect) == LOW) ? PKT_STARTSELECT : 0;

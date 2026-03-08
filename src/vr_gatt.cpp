@@ -136,9 +136,12 @@ bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct) {
     rpt.buttons = 0;
     if (local.btnMask & PKT_AX)          rpt.buttons |= 0x01; // trigger
     if (local.btnMask & PKT_BY)          rpt.buttons |= 0x02; // grip
-    if (local.btnMask & PKT_BP)          rpt.buttons |= 0x04; // bumper/menu
-    if (local.btnMask & PKT_ST)          rpt.buttons |= 0x08; // stick click
-    if (local.btnMask & PKT_STARTSELECT) rpt.buttons |= 0x10; // start/select
+    if (local.btnMask & PKT_CZ)          rpt.buttons |= 0x04; // C/Z
+    if (local.btnMask & PKT_DD)          rpt.buttons |= 0x08; // D/D
+    if (local.btnMask & PKT_EE)          rpt.buttons |= 0x10; // E/E
+    if (local.btnMask & PKT_BP)          rpt.buttons |= 0x20; // bumper/menu
+    if (local.btnMask & PKT_ST)          rpt.buttons |= 0x40; // stick click
+    if (local.btnMask & PKT_STARTSELECT) rpt.buttons |= 0x80; // start/select
 
     rpt.joy_x = local.jx;
     rpt.joy_y = local.jy;

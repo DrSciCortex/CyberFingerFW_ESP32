@@ -34,9 +34,12 @@ typedef struct __attribute__((packed))
 // Canonical packet bits
 static constexpr uint16_t PKT_AX = (1u << 0);          // left=X, right=A
 static constexpr uint16_t PKT_BY = (1u << 1);          // left=Y, right=B
-static constexpr uint16_t PKT_ST = (1u << 2);           // left=LS, right=RS
-static constexpr uint16_t PKT_BP = (1u << 3);           // left=LB, right=RB
-static constexpr uint16_t PKT_STARTSELECT = (1u << 4); // left=SELECT, right=START
+static constexpr uint16_t PKT_CZ = (1u << 2);          // left=Z, right=C
+static constexpr uint16_t PKT_DD = (1u << 3);          // left=D, right=D
+static constexpr uint16_t PKT_EE = (1u << 4);          // left=E, right=E
+static constexpr uint16_t PKT_ST = (1u << 5);           // left=LS, right=RS
+static constexpr uint16_t PKT_BP = (1u << 6);           // left=LB, right=RB
+static constexpr uint16_t PKT_STARTSELECT = (1u << 7); // left=SELECT, right=START
 
 // Merged HID-facing digital buttons (bitmask internal to this class)
 enum HidBtn : uint16_t

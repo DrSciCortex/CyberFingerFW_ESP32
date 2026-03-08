@@ -12,6 +12,9 @@
 struct Config {
   int buttonAX = 43;
   int buttonBY = 44;
+  int buttonCZ = 40;
+  int buttonDD = 41;
+  int buttonEE = 42;
   int buttonBP = 38;
   int buttonST = 39;
   int buttonStartSelect  = 0;

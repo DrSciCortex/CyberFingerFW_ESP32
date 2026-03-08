@@ -25,8 +25,9 @@
 // 12 bytes per notification, sent at ~100Hz when in VR mode
 typedef struct __attribute__((packed)) {
     uint8_t  hand;           // 0=left, 1=right
-    uint8_t  buttons;        // bit0=AX(trigger), bit1=BY(grip), bit2=BP(menu),
-                             // bit3=ST(joy click), bit4=STARTSELECT
+    uint8_t  buttons;        // bit0=AX(trigger), bit1=BY(grip), bit2=CZ,
+                             // bit3=DD, bit4=EE, bit5=BP(menu),
+                             // bit6=ST(joy click), bit7=STARTSELECT
     int16_t  joy_x;          // -32767..32767 (little-endian)
     int16_t  joy_y;          // -32767..32767
     uint8_t  trigger_analog; // 0-255 (future use, currently 0 or 255)

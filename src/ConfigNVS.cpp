@@ -32,6 +32,9 @@ void loadConfigFromNVS() {
   cfg.joyY      = prefs.getInt("pin_joyY",      cfg.joyY);
   cfg.buttonAX      = prefs.getInt("pin_btnAX",      cfg.buttonAX);
   cfg.buttonBY      = prefs.getInt("pin_btnBY",      cfg.buttonBY);
+  cfg.buttonCZ      = prefs.getInt("pin_btnCZ",      cfg.buttonCZ);
+  cfg.buttonDD      = prefs.getInt("pin_btnDD",      cfg.buttonDD);
+  cfg.buttonEE      = prefs.getInt("pin_btnEE",      cfg.buttonEE);
   cfg.buttonBP     = prefs.getInt("pin_btnBP",     cfg.buttonBP);
   cfg.buttonST     = prefs.getInt("pin_btnST",     cfg.buttonST);
   cfg.buttonStartSelect  = prefs.getInt("pin_btnStSel",  cfg.buttonStartSelect);
@@ -60,6 +63,9 @@ void saveConfigToNVS() {
   prefs.putBool("boot_debug",    cfg.boot_debug);
   prefs.putInt("pin_btnAX",      cfg.buttonAX);
   prefs.putInt("pin_btnBY",      cfg.buttonBY);
+  prefs.putInt("pin_btnCZ",      cfg.buttonCZ);
+  prefs.putInt("pin_btnDD",      cfg.buttonDD);
+  prefs.putInt("pin_btnEE",      cfg.buttonEE);
   prefs.putInt("pin_btnBP",     cfg.buttonBP);
   prefs.putInt("pin_btnST",     cfg.buttonST);
   prefs.putInt("pin_btnStSel",  cfg.buttonStartSelect);
@@ -87,6 +93,9 @@ bool applyJsonToConfig(const String& jsonLine, String& errMsg) {
     auto pins = doc["pins"];
     if (pins.containsKey("buttonAX"))      cfg.buttonAX      = pins["buttonAX"];
     if (pins.containsKey("buttonBY"))      cfg.buttonBY      = pins["buttonBY"];
+    if (pins.containsKey("buttonCZ"))      cfg.buttonCZ      = pins["buttonCZ"];
+    if (pins.containsKey("buttonDD"))      cfg.buttonDD      = pins["buttonDD"];
+    if (pins.containsKey("buttonEE"))      cfg.buttonEE      = pins["buttonEE"];
     if (pins.containsKey("buttonBP"))     cfg.buttonBP     = pins["buttonBP"];
     if (pins.containsKey("buttonST"))     cfg.buttonST     = pins["buttonST"];
     if (pins.containsKey("buttonStartSelect"))  cfg.buttonStartSelect  = pins["buttonStartSelect"];
@@ -223,6 +232,9 @@ String configToJsonString() {
   JsonObject pins = doc.createNestedObject("pins");
   pins["buttonAX"]      = cfg.buttonAX;
   pins["buttonBY"]      = cfg.buttonBY;
+  pins["buttonCZ"]      = cfg.buttonCZ;
+  pins["buttonDD"]      = cfg.buttonDD;
+  pins["buttonEE"]      = cfg.buttonEE;
   pins["buttonBP"]     = cfg.buttonBP;
   pins["buttonST"]     = cfg.buttonST;
   pins["buttonStartSelect"]  = cfg.buttonStartSelect;
