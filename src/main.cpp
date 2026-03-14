@@ -602,9 +602,8 @@ void calibrateJoyCenter()
 
 inline void applyRadialDeadzone(int16_t& x, int16_t& y, int16_t dz)
 {
-    int32_t mag2 = (int32_t)x * x + (int32_t)y * y;
-    int32_t dz2  = (int32_t)dz * dz;
-
+    int64_t mag2 = (int64_t)x * x + (int64_t)y * y;
+    int64_t dz2  = (int64_t)dz * dz;
     if (mag2 <= dz2) {
         x = 0;
         y = 0;
