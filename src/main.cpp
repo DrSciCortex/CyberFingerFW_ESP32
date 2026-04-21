@@ -37,6 +37,7 @@
 #include "splash_images.h"
 #include "audio.h"
 #include "vr_gatt.h"
+#include "icm45686_handler.h"
 #include "HWCDC.h"
 #include <Adafruit_DRV2605.h>
 
