@@ -22,7 +22,7 @@
 #define VR_GATT_CONTROL_CHAR_UUID   "0000CF02-0000-1000-8000-00805F9B34FB"
 
 // ── Wire format: notification payload ──────────────────────────────────────
-// 12 bytes per notification, sent at ~100Hz when in VR mode
+// 28 bytes per notification, sent at ~100Hz when in VR mode
 typedef struct __attribute__((packed)) {
     uint8_t  hand;           // 0=left, 1=right
     uint8_t  buttons;        // bit0=AX(trigger), bit1=BY(grip), bit2=CZ,
@@ -33,9 +33,10 @@ typedef struct __attribute__((packed)) {
     uint8_t  trigger_analog; // 0-255 (future use, currently 0 or 255)
     uint8_t  battery_pct;    // 0-100
     uint32_t seq;            // rolling sequence number
+    float    q[4];           // Quaternion (w, x, y, z) - 16 bytes
 } VrGattInputReport;
 
-static_assert(sizeof(VrGattInputReport) == 12, "VrGattInputReport must be 12 bytes");
+static_assert(sizeof(VrGattInputReport) == 28, "VrGattInputReport must be 28 bytes");
 
 // ── Control commands (written by bridge to 0xCF02) ─────────────────────────
 enum VrGattCommand : uint8_t {
@@ -51,10 +52,9 @@ enum VrGattCommand : uint8_t {
 // Returns true on success.
 bool vrGattInit(NimBLEServer* pServer, bool isRight);
 
-// Call every loop iteration when in VR direct mode.
 // Builds a VrGattInputReport from the HalfPacket and sends a BLE notification.
 // Returns true if notification was sent (client subscribed).
-bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct);
+bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct, const float q[4] = nullptr);
 
 // Check if a VR GATT client is connected and subscribed to notifications.
 bool vrGattClientConnected();
