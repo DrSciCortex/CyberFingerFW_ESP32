@@ -36,6 +36,7 @@
 
 #include "splash_images.h"
 #include "audio.h"
+#include "icm45686_handler.h"
 #include "vr_gatt.h"
 #include "HWCDC.h"
 #include <Adafruit_DRV2605.h>
@@ -631,6 +632,12 @@ void setup() {
   Wire.begin(IIC_SDA, IIC_SCL);
   Wire.setClock(400000);
 
+  if (icm45686_init()) {
+    USBSerial.println("ICM-45686 IMU initialized successfully.");
+  } else {
+    USBSerial.println("ICM-45686 IMU initialization FAILED.");
+  }
+
   expander = new EXAMPLE_CHIP_CLASS(TCA95xx_8bit,
                                     (i2c_port_t)0, ESP_IO_EXPANDER_I2C_TCA9554_ADDRESS_000,
                                     IIC_SCL, IIC_SDA);
@@ -901,7 +908,7 @@ void setup() {
 void loop() {
   uint16_t loop_period_us;
   //if (cfg.right_not_left) loop_period_us = 10000;
-  loop_period_us = 20000; // 20ms - 50Hz
+  loop_period_us = 10000; // 10ms - 100Hz
   bool changed = false;
   int32_t x, y, x2, y2;
 
@@ -1133,10 +1140,15 @@ void loop() {
   local.jx = joyX;
   local.jy = joyY;
 
+  // Update IMU and get orientation
+  float q[4] = {1, 0, 0, 0};
+  icm45686_update();
+  icm45686_get_quat(q);
+
   // ── VR DIRECT MODE ──
   // Each side independently sends its own data via BLE GATT.
   // No ESP-NOW gamepad merge. No Xbox HID reports.
-  vrGattSendInput(local, g_batteryPct);
+  vrGattSendInput(local, g_batteryPct, q);
 
   // Still respect loop timing
   uint32_t elapsed = micros() - loop_start;

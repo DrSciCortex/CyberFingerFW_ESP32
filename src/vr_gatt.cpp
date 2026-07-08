@@ -126,7 +126,7 @@ bool vrGattInit(NimBLEServer* pServer, bool isRight) {
 
 // ── Send Input ─────────────────────────────────────────────────────────────
 
-bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct) {
+bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct, const float q[4]) {
     if (!s_inputChar || !s_subscribed) return false;
 
     VrGattInputReport rpt{};
@@ -148,6 +148,19 @@ bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct) {
     rpt.trigger_analog = local.trigger;
     rpt.battery_pct = batteryPct;
     rpt.seq = ++s_seq;
+
+    // Add quaternion data
+    if (q) {
+        rpt.q[0] = q[0];
+        rpt.q[1] = q[1];
+        rpt.q[2] = q[2];
+        rpt.q[3] = q[3];
+    } else {
+        rpt.q[0] = 1.0f; // Identity
+        rpt.q[1] = 0.0f;
+        rpt.q[2] = 0.0f;
+        rpt.q[3] = 0.0f;
+    }
 
     s_inputChar->setValue((uint8_t*)&rpt, sizeof(rpt));
     s_inputChar->notify();
