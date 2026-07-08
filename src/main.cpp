@@ -313,9 +313,8 @@ XboxGamepadDevice *gamepad;
 MouseDevice *mouse;
 CyberFingerBLE *compositeHID;
 
-//previous power button state
-int prevPower = LOW;
-uint32_t time_powerpress = millis()+1000000;
+// Power-key shutdown-notice state. The key is serviced via the AXP2101 PMU
+// IRQ (see the main loop), not by polling a GPIO level.
 bool poweroff_notice = false;
 
 // VR Direct Mode state — when true, gamepad HID is suppressed and
@@ -660,11 +659,18 @@ void setup() {
     USBSerial.println("PMU is not online...");
   }
   else {
+    // The AXP2101 IRQ output is wired to IO-expander pin 4. The PMU latches
+    // that line on ANY event (power key, VBUS insert/remove, battery, …) and
+    // holds it asserted until clearIrqStatus() is called. Enable only the
+    // power-key edges/press events; the main loop decodes and clears them.
+    // (VBUS and other events are still cleared there, but ignored.)
     power.disableIRQ(XPOWERS_AXP2101_ALL_IRQ);
-    //power.setChargeTargetVoltage(2);
-    // Clear all interrupt flags
     power.clearIrqStatus();
-    // Enable the required interrupt function
+    power.enableIRQ(XPOWERS_AXP2101_PKEY_POSITIVE_IRQ |
+                    XPOWERS_AXP2101_PKEY_NEGATIVE_IRQ |
+                    XPOWERS_AXP2101_PKEY_SHORT_IRQ |
+                    XPOWERS_AXP2101_PKEY_LONG_IRQ);
+    power.clearIrqStatus();
 
     adcOn();
   }
@@ -1030,51 +1036,20 @@ void loop() {
 
   //USBSerial.println("OnNowRecv pkt age="+String(age_ms));
 
-  // read the power button and give feedback of immenant shutdown
-  int currPower = HIGH;
-  if (expander_present) {
-    currPower = expander->digitalRead(4);
-  }
+  // ── Power key handling via the AXP2101 PMU IRQ ───────────────────────────
+  // Expander pin 4 is the PMU's (latched, active) IRQ output. When it signals a
+  // pending event we read the PMU status over I2C, act only on power-key events,
+  // then ALWAYS clear so the line de-asserts. Reading the pin as a raw button
+  // level (the old approach) misfired on VBUS insert/remove and left the notice
+  // splash stuck, because the latched line never returned on its own.
+  if (expander_present && expander->digitalRead(4) == HIGH) {
+    power.getIrqStatus();
 
-  if (currPower != prevPower) {
-    if (currPower == HIGH) {
-      USBSerial.println("Button Power pressed");
-      time_powerpress = millis();
-
-    } else {
-      USBSerial.println("Button Power released");
-      uint32_t pressDuration = millis() - time_powerpress;
-
-      if (pressDuration < 2000) {
-        // ── Short press (<2s): Do smth ──
-        // TODO emit another button press event
-
-      } 
-      
-      if (poweroff_notice) {
-        #ifdef HAS_GFX
-        gfx->fillScreen(BLACK);
-        #endif //HAS_GFX
-        poweroff_notice = false;
-
-        // LOW_POWER: shutdown cancelled — clear the wake guard and restart
-        // the idle timer. Screen will go to SLPIN on the next timeout tick.
-#ifdef LOW_POWER
-        g_shutdownWake   = false;
-        g_lastActivityMs = millis();
-        USBSerial.println("[LOW_POWER] Shutdown cancelled — idle timer restarted.");
-#endif // LOW_POWER
-      }
-    }     
-    prevPower = currPower; 
-  }
-
-  // give user feedback already at 2s ... to anticipate a power-down at ~5s (hardware implements that)
-  if (currPower==HIGH && (millis() - time_powerpress)>2000) {
-
-    if (!poweroff_notice) {
+    // Long press → warn of imminent hardware power-off (~5s) with splash + sound.
+    if (power.isPekeyLongPressIrq() && !poweroff_notice) {
+      USBSerial.println("Button Power long press — shutdown notice");
       // LOW_POWER: wake screen + PA for the shutdown notice.
-      // g_shutdownWake blocks the idle timer while the button stays held.
+      // g_shutdownWake blocks the idle timer while the notice is showing.
 #ifdef LOW_POWER
       if (!g_shutdownWake) {
         g_shutdownWake = true;
@@ -1093,6 +1068,33 @@ void loop() {
       #endif
       poweroff_notice = true;
     }
+
+    // Button released → cancel a pending shutdown notice.
+    if (power.isPekeyNegativeIrq()) {
+      USBSerial.println("Button Power released");
+      if (poweroff_notice) {
+        #ifdef HAS_GFX
+        gfx->fillScreen(BLACK);
+        #endif //HAS_GFX
+        poweroff_notice = false;
+
+        // LOW_POWER: shutdown cancelled — clear the wake guard and restart
+        // the idle timer. Screen will go to SLPIN on the next timeout tick.
+#ifdef LOW_POWER
+        g_shutdownWake   = false;
+        g_lastActivityMs = millis();
+        USBSerial.println("[LOW_POWER] Shutdown cancelled — idle timer restarted.");
+#endif // LOW_POWER
+      }
+    }
+
+    if (power.isPekeyShortPressIrq()) {
+      // ── Short press: reserved for a future action ──
+      // TODO emit another button press event
+    }
+
+    // Always clear: de-asserts the IRQ line and drops VBUS/other events we ignore.
+    power.clearIrqStatus();
   }
 
  
