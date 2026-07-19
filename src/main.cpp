@@ -1296,16 +1296,19 @@ void loop() {
   if (g_hasImu) {
     icm45686_update(ICM_BODY);
     icm45686_get_quat(ICM_BODY, imus.body1);
+    icm45686_get_accel(ICM_BODY, imus.a_body1);
     imus.present |= VR_IMU_BODY_PRIMARY;
   }
   if (g_hasQmi) {
     qmi8658_update();
     qmi8658_get_quat(imus.body2);
+    qmi8658_get_accel(imus.a_body2);
     imus.present |= VR_IMU_BODY_SECONDARY;
   }
   if (g_hasJointImu) {
     icm45686_update(ICM_JOINT);
     icm45686_get_quat(ICM_JOINT, imus.joint);
+    icm45686_get_accel(ICM_JOINT, imus.a_joint);
     imus.present |= VR_IMU_JOINT;
   }
 

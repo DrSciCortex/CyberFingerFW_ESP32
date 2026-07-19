@@ -21,6 +21,9 @@ static VQF vqf(0.01f);              // 100 Hz nominal; real dt passed per sample
 static uint32_t last_update = 0;
 static bool     initialised = false;
 
+// Last raw accelerometer sample for the wire format, LSB at 2048 LSB/g.
+static int16_t  s_accel[3] = {0, 0, 0};
+
 bool qmi8658_init() {
     // Wire is already up by the time this runs; SensorLib re-calls Wire.begin()
     // internally, which the ESP32 core turns into a no-op that preserves the
@@ -30,12 +33,24 @@ bool qmi8658_init() {
     }
 
     // Ranges chosen to match the ICM-45686's role as the redundant body
-    // sensor. 1024 dps is this part's maximum - the ICM runs 2000 dps, so a
-    // fast enough wrist flick can saturate this one first.
-    qmi.configAccelerometer(SensorQMI8658::ACC_RANGE_4G,
-                            SensorQMI8658::ACC_ODR_125Hz);
+    // sensor. 16g yields 2048 LSB/g, identical to the ICM at its 16g range, so
+    // every IMU slot on the wire shares one scale factor. 1024 dps is this
+    // part's maximum - the ICM runs 2000 dps, so a fast enough wrist flick can
+    // saturate this one first.
+    // LPF choice matters more than it looks: SensorLib's default is LPF_MODE_0,
+    // which is only 2.66% of ODR - about 3Hz here - and its group delay showed
+    // up as this sensor visibly lagging the ICM. LPF_MODE_3 is 13.37% of ODR
+    // (~17Hz accel, ~15Hz gyro), wide enough to track hand motion while still
+    // band-limiting ahead of the ~100Hz loop that consumes these samples.
+    //
+    // Not LPF_OFF: the sensor runs slightly faster than the loop reads it, so
+    // some samples are dropped, and an unfiltered signal would alias.
+    qmi.configAccelerometer(SensorQMI8658::ACC_RANGE_16G,
+                            SensorQMI8658::ACC_ODR_125Hz,
+                            SensorQMI8658::LPF_MODE_3);
     qmi.configGyroscope(SensorQMI8658::GYR_RANGE_1024DPS,
-                        SensorQMI8658::GYR_ODR_112_1Hz);
+                        SensorQMI8658::GYR_ODR_112_1Hz,
+                        SensorQMI8658::LPF_MODE_3);
 
     qmi.enableAccelerometer();
     qmi.enableGyroscope();
@@ -58,6 +73,10 @@ void qmi8658_update() {
     if (!qmi.getAccelerometer(ax, ay, az)) return;   // g
     if (!qmi.getGyroscope(gx, gy, gz)) return;       // dps
 
+    // Raw counts for the wire format, in the same 2048 LSB/g units the ICMs
+    // report so the host applies one scale factor to every slot.
+    qmi.getAccelRaw(s_accel);
+
     float acc[3] = {ax, ay, az};                     // VQF normalises accel
 
     const float kDegToRad = (float)(M_PI / 180.0);
@@ -78,4 +97,10 @@ void qmi8658_update() {
 
 void qmi8658_get_quat(float quat[4]) {
     vqf.getQuat6D(quat);
+}
+
+void qmi8658_get_accel(int16_t out[3]) {
+    out[0] = s_accel[0];
+    out[1] = s_accel[1];
+    out[2] = s_accel[2];
 }

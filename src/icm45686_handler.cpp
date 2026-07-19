@@ -29,15 +29,18 @@
 #define PWR_MGMT0_ACCEL_GYRO_LN  ((0x03 << 2) | 0x03)   // 0x0F
 
 // {ACCEL,GYRO}_CONFIG0 = FS_SEL << 4 | ODR.
-// 4g and 2000dps match the scaling applied in icm45686_update();
+// 16g gives headroom for hand motion - 4g clipped on fast gestures, and a
+// clipped sample double-integrates into large position error on the host.
 // 100 Hz matches the nominal VQF sample rate.
-#define ACCEL_FS_4G       0x03
+#define ACCEL_FS_16G      0x01
 #define GYRO_FS_2000DPS   0x01
 #define ODR_100HZ         0x09
 
 // Scaling constants, kept next to the FS selects above so the two cannot drift
-// apart: 32768 / 4g = 8192 LSB/g, and 2000 dps over a full-scale int16.
-#define ACCEL_LSB_PER_G   8192.0f
+// apart: 32768 / 16g = 2048 LSB/g, and 2000 dps over a full-scale int16.
+// NOTE: 2048 LSB/g is also what the QMI8658 yields at its 16g range, so all
+// three IMU slots on the wire share one scale factor.
+#define ACCEL_LSB_PER_G   2048.0f
 #define GYRO_DPS_PER_LSB  (2000.0f / 32768.0f)
 
 // Per-instance state. Both parts are identical and share a register map, so
@@ -47,6 +50,10 @@ static uint8_t  s_addr[ICM_COUNT]   = { 0, 0 };
 static uint32_t s_last[ICM_COUNT]   = { 0, 0 };
 static uint8_t  s_whoami[ICM_COUNT] = { 0, 0 };
 static bool     s_ok[ICM_COUNT]     = { false, false };
+
+// Last raw accelerometer sample, kept so the wire format can carry body-frame
+// acceleration alongside the fused orientation. Raw LSB at ACCEL_LSB_PER_G.
+static int16_t  s_accel[ICM_COUNT][3] = { {0, 0, 0}, {0, 0, 0} };
 
 // Helper to write a register
 static void write_reg(uint8_t addr, uint8_t reg, uint8_t val) {
@@ -94,7 +101,7 @@ bool icm45686_init(uint8_t instance, uint8_t addr) {
     // sensor glitches its output. (SlimeVR writes PWR_MGMT0 last for this
     // reason; the original order here powered up first, then reconfigured.)
     write_reg(addr, REG_GYRO_CONFIG0,  (GYRO_FS_2000DPS << 4) | ODR_100HZ);
-    write_reg(addr, REG_ACCEL_CONFIG0, (ACCEL_FS_4G     << 4) | ODR_100HZ);
+    write_reg(addr, REG_ACCEL_CONFIG0, (ACCEL_FS_16G    << 4) | ODR_100HZ);
     write_reg(addr, REG_PWR_MGMT0, PWR_MGMT0_ACCEL_GYRO_LN);
     delay(10);
 
@@ -113,8 +120,9 @@ void icm45686_update(uint8_t instance) {
 
     // Data is LITTLE-endian: the byte at the lower address is the LOW byte, so
     // the block really starts at ACCEL_DATA_X0_UI. Confirmed on hardware - held
-    // flat, this parse gives (-146, 528, 8179) i.e. 1g on Z at 4g FS, while the
-    // big-endian parse gives an incoherent (28415, 4098, -3297).
+    // flat at the then-configured 4g FS, this parse gave (-146, 528, 8179),
+    // i.e. 1g on Z, while the big-endian parse gave an incoherent
+    // (28415, 4098, -3297). At the current 16g FS, 1g reads ~2048.
     //
     // Note SlimeVR's nRF driver parses these registers big-endian; its ESP
     // driver parses the FIFO little-endian. This part's register path is
@@ -131,6 +139,13 @@ void icm45686_update(uint8_t instance) {
     int16_t gx_raw = (int16_t)((buf[1] << 8) | buf[0]);
     int16_t gy_raw = (int16_t)((buf[3] << 8) | buf[2]);
     int16_t gz_raw = (int16_t)((buf[5] << 8) | buf[4]);
+
+    // Keep the raw body-frame sample for the wire format. The host needs
+    // acceleration in the same frame as the quaternion it arrives with, so no
+    // gravity removal happens here - see vr_gatt.h.
+    s_accel[instance][0] = ax_raw;
+    s_accel[instance][1] = ay_raw;
+    s_accel[instance][2] = az_raw;
 
     // Convert to float
     float acc[3];
@@ -164,6 +179,13 @@ void icm45686_update(uint8_t instance) {
 void icm45686_get_quat(uint8_t instance, float quat[4]) {
     if (instance >= ICM_COUNT) return;
     s_vqf[instance].getQuat6D(quat);
+}
+
+void icm45686_get_accel(uint8_t instance, int16_t out[3]) {
+    if (instance >= ICM_COUNT) return;
+    out[0] = s_accel[instance][0];
+    out[1] = s_accel[instance][1];
+    out[2] = s_accel[instance][2];
 }
 
 uint8_t icm45686_whoami(uint8_t instance) {

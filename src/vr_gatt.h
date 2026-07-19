@@ -55,9 +55,31 @@ typedef struct __attribute__((packed)) {
     uint8_t  imu_present;    // bitmask of VrImuBit; absent slots hold identity
     float    q_body2[4];     // secondary body IMU (redundant with q)
     float    q_joint[4];     // joint IMU
+    // Raw body-frame acceleration, one vector per IMU slot, same order as the
+    // quaternions above. Absent slots are zero.
+    //
+    // Units: LSB at VR_ACCEL_LSB_PER_G (+/-16g full scale on every sensor).
+    // NOT gravity-corrected, and in SENSOR frame, not world frame. A consumer
+    // wanting linear acceleration removes gravity using the quaternion from
+    // this same packet - which is why they are sent together:
+    //
+    //   gx = 2*(q1*q3 - q0*q2)
+    //   gy = 2*(q0*q1 + q2*q3)
+    //   gz = q0*q0 - q1*q1 - q2*q2 + q3*q3
+    //   linear[i] = accel[i]/VR_ACCEL_LSB_PER_G*9.80665 - g[i]*9.80665   [m/s^2]
+    //
+    // That is the same derivation SlimeVR uses, so a bridge emulating SlimeVR
+    // trackers can feed the result straight into PACKET_ACCEL (4) alongside
+    // the quaternion in PACKET_ROTATION_DATA (17).
+    int16_t  a_body1[3];     // primary body IMU
+    int16_t  a_body2[3];     // secondary body IMU
+    int16_t  a_joint[3];     // joint IMU
 } VrGattInputReport;
 
-static_assert(sizeof(VrGattInputReport) == 61, "VrGattInputReport must be 61 bytes");
+// Divide a_* by this to get g.
+#define VR_ACCEL_LSB_PER_G 2048.0f
+
+static_assert(sizeof(VrGattInputReport) == 79, "VrGattInputReport must be 79 bytes");
 static_assert(offsetof(VrGattInputReport, imu_present) == 28,
               "legacy 28-byte prefix must stay frozen for older mod builds");
 
@@ -78,10 +100,13 @@ bool vrGattInit(NimBLEServer* pServer, bool isRight);
 // Orientation set gathered from whichever IMUs this unit actually has.
 // Slots flagged absent in `present` are ignored and sent as identity.
 typedef struct {
-    uint8_t present;    // bitmask of VrImuBit
-    float   body1[4];   // primary body IMU (w, x, y, z)
-    float   body2[4];   // secondary body IMU
-    float   joint[4];   // joint IMU
+    uint8_t present;      // bitmask of VrImuBit
+    float   body1[4];     // primary body IMU (w, x, y, z)
+    float   body2[4];     // secondary body IMU
+    float   joint[4];     // joint IMU
+    int16_t a_body1[3];   // raw body-frame accel, VR_ACCEL_LSB_PER_G
+    int16_t a_body2[3];
+    int16_t a_joint[3];
 } VrImuSet;
 
 // Builds a VrGattInputReport from the HalfPacket and sends a BLE notification.

@@ -168,6 +168,17 @@ bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct, const VrImuSet
     memcpy(rpt.q_body2, qBody2, sizeof(rpt.q_body2));
     memcpy(rpt.q_joint, qJoint, sizeof(rpt.q_joint));
 
+    // Raw accel per slot. Absent slots stay zero (rpt was value-initialised),
+    // which is distinguishable from a real reading via imu_present.
+    static const int16_t kZeroAccel[3] = {0, 0, 0};
+    const int16_t* aBody1 = (rpt.imu_present & VR_IMU_BODY_PRIMARY)   ? imus->a_body1 : kZeroAccel;
+    const int16_t* aBody2 = (rpt.imu_present & VR_IMU_BODY_SECONDARY) ? imus->a_body2 : kZeroAccel;
+    const int16_t* aJoint = (rpt.imu_present & VR_IMU_JOINT)          ? imus->a_joint : kZeroAccel;
+
+    memcpy(rpt.a_body1, aBody1, sizeof(rpt.a_body1));
+    memcpy(rpt.a_body2, aBody2, sizeof(rpt.a_body2));
+    memcpy(rpt.a_joint, aJoint, sizeof(rpt.a_joint));
+
     s_inputChar->setValue((uint8_t*)&rpt, sizeof(rpt));
     s_inputChar->notify();
 

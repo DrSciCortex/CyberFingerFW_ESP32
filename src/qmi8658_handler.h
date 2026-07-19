@@ -30,3 +30,11 @@ void qmi8658_update();
  * @param q Array to store [w, x, y, z].
  */
 void qmi8658_get_quat(float q[4]);
+
+/**
+ * @brief Most recent raw body-frame acceleration, in LSB at 2048 LSB/g
+ *        (the +/-16g full-scale range, matching the ICM-45686 slots).
+ *        NOT gravity-corrected - the host removes gravity using the
+ *        quaternion from the same sample.
+ */
+void qmi8658_get_accel(int16_t out[3]);

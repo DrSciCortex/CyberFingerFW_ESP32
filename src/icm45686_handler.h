@@ -44,6 +44,13 @@ void icm45686_update(uint8_t instance);
 void icm45686_get_quat(uint8_t instance, float q[4]);
 
 /**
+ * @brief Most recent raw body-frame acceleration, in LSB at 2048 LSB/g
+ *        (the +/-16g full-scale range). NOT gravity-corrected - the host
+ *        removes gravity using the quaternion from the same sample.
+ */
+void icm45686_get_accel(uint8_t instance, int16_t out[3]);
+
+/**
  * @brief WHO_AM_I read during init, for diagnostics. 0 if the read failed.
  */
 uint8_t icm45686_whoami(uint8_t instance);
