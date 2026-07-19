@@ -32,8 +32,15 @@ VQF::VQF(const VQFParams &params, vqf_real_t gyrTs, vqf_real_t accTs, vqf_real_t
     setup();
 }
 
-void VQF::updateGyr(const vqf_real_t gyr[3])
+void VQF::updateGyr(const vqf_real_t gyr[3], vqf_real_t gyrTs)
 {
+    // Caller may pass the real elapsed time; fall back to the nominal rate.
+    // Only the integration step below uses it - the rest-detection filter keeps
+    // the nominal rate, since its coefficients are precomputed from it.
+    if (gyrTs <= vqf_real_t(0.0)) {
+        gyrTs = coeffs.gyrTs;
+    }
+
     // rest detection
     if (params.restBiasEstEnabled || params.magDistRejectionEnabled) {
         filterVec(gyr, 3, params.restFilterTau, coeffs.gyrTs, coeffs.restGyrLpB, coeffs.restGyrLpA,
@@ -55,7 +62,7 @@ void VQF::updateGyr(const vqf_real_t gyr[3])
     vqf_real_t gyrNoBias[3] = {gyr[0]-state.bias[0], gyr[1]-state.bias[1], gyr[2]-state.bias[2]};
     // gyroscope prediction step
     vqf_real_t gyrNorm = norm(gyrNoBias, 3);
-    vqf_real_t angle = gyrNorm * coeffs.gyrTs;
+    vqf_real_t angle = gyrNorm * gyrTs;
     if (gyrNorm > EPS) {
         vqf_real_t c = cosf(angle/2);
         vqf_real_t s = sinf(angle/2)/gyrNorm;

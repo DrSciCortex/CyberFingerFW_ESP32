@@ -112,7 +112,12 @@ public:
     VQF(vqf_real_t gyrTs, vqf_real_t accTs = -1.0, vqf_real_t magTs = -1.0);
     VQF(const VQFParams& params, vqf_real_t gyrTs, vqf_real_t accTs = -1.0, vqf_real_t magTs = -1.0);
 
-    void updateGyr(const vqf_real_t gyr[3]);
+    // gyrTs is the ACTUAL elapsed time since the previous gyro sample, in
+    // seconds. The constructor's gyrTs is only a nominal rate; integrating
+    // every sample as if it arrived exactly on schedule accumulates orientation
+    // error whenever the caller's loop jitters. Pass <= 0 to fall back to the
+    // nominal rate. (Same patch SlimeVR applies to upstream VQF.)
+    void updateGyr(const vqf_real_t gyr[3], vqf_real_t gyrTs = -1.0);
     void updateAcc(const vqf_real_t acc[3]);
     void updateMag(const vqf_real_t mag[3]);
 

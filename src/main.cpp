@@ -37,6 +37,7 @@
 #include "splash_images.h"
 #include "audio.h"
 #include "icm45686_handler.h"
+#include "qmi8658_handler.h"
 #include "vr_gatt.h"
 #include "HWCDC.h"
 #include <Adafruit_DRV2605.h>
@@ -134,13 +135,117 @@ void initQueue_old() {
   }
 }
 
-#ifdef HAS_HAPTICS
 // haptics
+//
+// The DRV2605L haptic driver (CFV1BP only) and the ICM-45686 IMU are both
+// optional at the board level. Rather than shipping a firmware per variant,
+// each is probed on I2C at boot and these flags gate its use for the rest of
+// the run, so one binary covers boards with and without either part.
+bool g_hasHaptics = false;
+bool g_hasImu     = false;   // ICM-45686 @0x69, primary body
+bool g_hasJointImu = false;  // ICM-45686 @0x68, optional joint sensor
+bool g_hasQmi     = false;   // QMI8658 @0x6B, secondary body
+
+// Address-only probe. The first transaction on this bus after init reliably
+// NACKs even when the chip is present (the IO expander fails to install the
+// IDF I2C driver because Wire already owns port 0, which leaves the bus needing
+// a transaction to settle), so a single-shot probe reports false negatives.
+// Retry before concluding the part is absent.
+static bool i2cPresent(uint8_t addr, uint8_t tries = 4) {
+  for (uint8_t i = 0; i < tries; i++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) return true;
+    delay(2);
+  }
+  return false;
+}
+
+// Read a single register, for identifying an unknown part that ACKs.
+static bool i2cReadReg(uint8_t addr, uint8_t reg, uint8_t *out) {
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom((int)addr, 1) != 1) return false;
+  *out = Wire.read();
+  return true;
+}
+
+// Dump candidate WHO_AM_I locations for every IMU slot this board can carry:
+// two optional ICM-45686 (0x68/0x69, strapped via AP_AD0) and the onboard
+// QMI8658 (0x6B). Register 0x75 is where the driver currently looks, which is
+// the ICM-426xx/206xx location; 0x72 is the ICM-456xx one; QMI8658 reports at
+// 0x00. Printing all three tells us which part is really at which address.
+static void imuIdentify() {
+  const uint8_t addrs[] = {0x68, 0x69, 0x6B};
+  const uint8_t regs[]  = {0x00, 0x72, 0x75};
+  for (uint8_t a = 0; a < sizeof(addrs); a++) {
+    if (!i2cPresent(addrs[a], 1)) {
+      USBSerial.printf("[IMU] 0x%02X absent\n", addrs[a]);
+      continue;
+    }
+    USBSerial.printf("[IMU] 0x%02X present:", addrs[a]);
+    for (uint8_t r = 0; r < sizeof(regs); r++) {
+      uint8_t v = 0;
+      if (i2cReadReg(addrs[a], regs[r], &v)) {
+        USBSerial.printf("  reg%02X=0x%02X", regs[r], v);
+      } else {
+        USBSerial.printf("  reg%02X=ERR", regs[r]);
+      }
+    }
+    USBSerial.println();
+  }
+}
+
+// Settle the ICM-45686 data byte order empirically. SlimeVR's own two drivers
+// disagree: the nRF register path parses big-endian, the ESP FIFO path parses
+// little-endian. Hold the unit STILL - at 4g FS, gravity puts ~8192 (0x2000)
+// on one axis and ~0 on the other two. Whichever row shows that is correct.
+static void imuEndianCheck(uint8_t addr) {
+  uint8_t b[6];
+  Wire.beginTransmission(addr);
+  Wire.write(0x00);                        // ACCEL_DATA block
+  if (Wire.endTransmission(false) != 0) {
+    USBSerial.println("[IMU] endian check: addr write failed");
+    return;
+  }
+  if (Wire.requestFrom((int)addr, 6) != 6) {
+    USBSerial.println("[IMU] endian check: burst read failed");
+    return;
+  }
+  for (uint8_t i = 0; i < 6; i++) b[i] = Wire.read();
+
+  USBSerial.printf("[IMU] raw  %02X %02X  %02X %02X  %02X %02X\n",
+                   b[0], b[1], b[2], b[3], b[4], b[5]);
+  USBSerial.printf("[IMU]  BE  %6d %6d %6d\n",
+                   (int16_t)((b[0] << 8) | b[1]),
+                   (int16_t)((b[2] << 8) | b[3]),
+                   (int16_t)((b[4] << 8) | b[5]));
+  USBSerial.printf("[IMU]  LE  %6d %6d %6d\n",
+                   (int16_t)((b[1] << 8) | b[0]),
+                   (int16_t)((b[3] << 8) | b[2]),
+                   (int16_t)((b[5] << 8) | b[4]));
+}
+
+// Print every address that ACKs. Cheap, and the only reliable way to tell
+// "part is absent" from "part is at the address we did not expect".
+static void i2cScan() {
+  USBSerial.print("[I2C] scan:");
+  uint8_t found = 0;
+  for (uint8_t addr = 0x08; addr < 0x78; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      USBSerial.printf(" 0x%02X", addr);
+      found++;
+    }
+  }
+  USBSerial.printf("  (%u device%s)\n", found, found == 1 ? "" : "s");
+}
 
 Adafruit_DRV2605 drv;
 
 
 static void playEffect(uint8_t effectId) {
+  if (!g_hasHaptics) return;
   // Sequence slots 0..7, 0 terminates
   drv.setWaveform(0, effectId);
   drv.setWaveform(1, 0);
@@ -148,6 +253,7 @@ static void playEffect(uint8_t effectId) {
 }
 
 static void rtpBuzz(uint8_t strength, uint16_t ms) {
+  if (!g_hasHaptics) return;
   // Real-Time Playback: "strength" is 0..127-ish (implementation-dependent),
   // higher = stronger vibration (up to what motor/driver can deliver).
   drv.setMode(DRV2605_MODE_REALTIME);
@@ -156,7 +262,6 @@ static void rtpBuzz(uint8_t strength, uint16_t ms) {
   drv.setRealtimeValue(0);
   drv.setMode(DRV2605_MODE_INTTRIG); // back to effect playback mode
 }
-#endif // HAS_HAPTICS
 
 // Joystick change threshold
 //const uint16_t JOYSTICK_DEADZONE = 250;
@@ -301,6 +406,16 @@ public:
     using BleCompositeHID::BleCompositeHID;
     
     void onStarted(NimBLEServer* pServer) override {
+        // NimBLE 2.x never copies the GAP name into the advertisement, so hosts
+        // see no name at pairing time (Windows shows "Input", Linux the MAC).
+        // The name doesn't fit alongside flags+appearance+UUID in the 31-byte
+        // advert, so enable the scan response and put it there.
+        NimBLEAdvertising* adv = pServer->getAdvertising();
+        adv->enableScanResponse(true);
+        if (!adv->setName(deviceName)) {
+            USBSerial.println("[BLE] WARNING: could not advertise device name");
+        }
+
         USBSerial.println("[BLE] onStarted — adding VR GATT service");
         if (!vrGattInit(pServer, isRight)) {
             USBSerial.println("[BLE] WARNING: VR GATT service init failed");
@@ -632,15 +747,13 @@ void setup() {
   Wire.begin(IIC_SDA, IIC_SCL);
   Wire.setClock(400000);
 
-  if (icm45686_init()) {
-    USBSerial.println("ICM-45686 IMU initialized successfully.");
-  } else {
-    USBSerial.println("ICM-45686 IMU initialization FAILED.");
-  }
-
+  // Wire.begin() above already installed the IDF I2C driver on port 0, and the
+  // expander speaks the same legacy driver/i2c.h API on that port. Use the
+  // address-only constructor (i2c_need_init = false) so init() does not try to
+  // install the driver a second time - that install fails with ESP_FAIL and
+  // leaves the expander without a handle.
   expander = new EXAMPLE_CHIP_CLASS(TCA95xx_8bit,
-                                    (i2c_port_t)0, ESP_IO_EXPANDER_I2C_TCA9554_ADDRESS_000,
-                                    IIC_SCL, IIC_SDA);
+                                    (i2c_port_t)0, ESP_IO_EXPANDER_I2C_TCA9554_ADDRESS_000);
   expander->init();
   expander->begin();
   expander->pinMode(0, OUTPUT);
@@ -772,6 +885,34 @@ void setup() {
 
   #endif
 
+  // IMU probe lives here rather than right after Wire.begin() so its output
+  // lands late enough in setup() to be visible on the USB CDC monitor, which
+  // the host has usually not attached yet at bus-init time. It also gives the
+  // I2C bus and the part more time to settle before the first transaction.
+  i2cScan();
+  imuIdentify();
+  // Each ICM is initialized against its own address and fusion state. Both
+  // parts report the same WHO_AM_I, so which one is the body sensor and which
+  // is the joint sensor is decided purely by the AP_AD0 strapping - see the
+  // address defines in icm45686_handler.h.
+  g_hasImu = icm45686_init(ICM_BODY, ICM_ADDR_BODY);
+  USBSerial.printf("[IMU] ICM-45686 body  @0x%02X %s (WHO_AM_I=0x%02X)\n",
+                   ICM_ADDR_BODY, g_hasImu ? "OK" : "not present",
+                   icm45686_whoami(ICM_BODY));
+
+  g_hasJointImu = icm45686_init(ICM_JOINT, ICM_ADDR_JOINT);
+  USBSerial.printf("[IMU] ICM-45686 joint @0x%02X %s (WHO_AM_I=0x%02X)\n",
+                   ICM_ADDR_JOINT, g_hasJointImu ? "OK" : "not present",
+                   icm45686_whoami(ICM_JOINT));
+
+  if (g_hasImu) {
+    delay(50);            // let a sample land after power-on
+    imuEndianCheck(ICM_ADDR_BODY);
+  }
+
+  g_hasQmi = qmi8658_init();
+  USBSerial.printf("[IMU] QMI8658 @0x%02X %s\n", 0x6B,
+                   g_hasQmi ? "initialized successfully." : "not present.");
 
     // zero‑out history
   for (auto &p : history) p = {0,0,0};
@@ -872,23 +1013,32 @@ void setup() {
 
   #endif
 
-  #ifdef HAS_HAPTICS
-    if (!drv.begin()) {
-    USBSerial.println("DRV2605L not found on I2C (addr usually 0x5A). Check wiring.");
-    // Your motor is an ERM coin motor (2-wire DC). :contentReference[oaicite:1]{index=1}
-    drv.useERM();
-    // Pick an effect library (1..6). Library 1 is a common default.
-    drv.selectLibrary(1);
-    // Internal trigger: we call go() to play whatever is in the waveform slots.
-    drv.setMode(DRV2605_MODE_INTTRIG);
+  // Haptics are present only on CFV1BP boards. Probe the address directly:
+  // drv.begin() folds "not present" and "not ready" into one false, so it is
+  // not a reliable presence test here.
+  {
+    bool acked = i2cPresent(DRV2605_ADDR);
+    bool begun = drv.begin();
+    USBSerial.printf("[HAPTICS] probe 0x%02X ack=%d, drv.begin()=%d\n",
+                     DRV2605_ADDR, (int)acked, (int)begun);
 
-    Serial.println("Playing a few effects...");
-    playEffect(1);   delay(250);   // "strong click" style (varies by library)
-    playEffect(47);  delay(300);   // "buzz" style (varies by library)
-      playEffect(1);      // "strong click" style (varies by library)
-    //playEffect(52);  delay(400);
+    g_hasHaptics = acked;
+    if (g_hasHaptics) {
+      // Motor is an ERM coin motor (2-wire DC).
+      drv.useERM();
+      // Pick an effect library (1..6). Library 1 is a common default.
+      drv.selectLibrary(1);
+      // Internal trigger: we call go() to play whatever is in the waveform slots.
+      drv.setMode(DRV2605_MODE_INTTRIG);
+
+      USBSerial.println("[HAPTICS] DRV2605L ready, playing startup effects.");
+      playEffect(1);   delay(250);   // "strong click" style (varies by library)
+      playEffect(47);  delay(300);   // "buzz" style (varies by library)
+      playEffect(1);                 // "strong click" style (varies by library)
+    } else {
+      USBSerial.println("[HAPTICS] No DRV2605L on I2C - haptics disabled.");
+    }
   }
-  #endif // HAS_HAPTICS
 
   if (cfg.right_not_left) {
     USBSerial.println("Start cyberfinger right device SUCCESS.");
@@ -1140,15 +1290,29 @@ void loop() {
   local.jx = joyX;
   local.jy = joyY;
 
-  // Update IMU and get orientation
-  float q[4] = {1, 0, 0, 0};
-  icm45686_update();
-  icm45686_get_quat(q);
+  // Update whichever IMUs this unit actually has. Absent sensors cost no I2C
+  // traffic and are reported via the imu_present bitmask.
+  VrImuSet imus{};
+  if (g_hasImu) {
+    icm45686_update(ICM_BODY);
+    icm45686_get_quat(ICM_BODY, imus.body1);
+    imus.present |= VR_IMU_BODY_PRIMARY;
+  }
+  if (g_hasQmi) {
+    qmi8658_update();
+    qmi8658_get_quat(imus.body2);
+    imus.present |= VR_IMU_BODY_SECONDARY;
+  }
+  if (g_hasJointImu) {
+    icm45686_update(ICM_JOINT);
+    icm45686_get_quat(ICM_JOINT, imus.joint);
+    imus.present |= VR_IMU_JOINT;
+  }
 
   // ── VR DIRECT MODE ──
   // Each side independently sends its own data via BLE GATT.
   // No ESP-NOW gamepad merge. No Xbox HID reports.
-  vrGattSendInput(local, g_batteryPct, q);
+  vrGattSendInput(local, g_batteryPct, &imus);
 
   // Still respect loop timing
   uint32_t elapsed = micros() - loop_start;

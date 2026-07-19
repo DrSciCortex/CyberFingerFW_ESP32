@@ -10,6 +10,7 @@
 
 #pragma once
 #include <stdint.h>
+#include <stddef.h>          // offsetof, used by the wire-format static_assert
 #include <NimBLEDevice.h>
 #include <NimBLEServer.h>
 #include <NimBLEUtils.h>
@@ -21,8 +22,24 @@
 #define VR_GATT_INPUT_CHAR_UUID     "0000CF01-0000-1000-8000-00805F9B34FB"
 #define VR_GATT_CONTROL_CHAR_UUID   "0000CF02-0000-1000-8000-00805F9B34FB"
 
+// ── IMU presence bits (VrGattInputReport.imu_present) ──────────────────────
+// This board can carry up to three IMUs: the onboard QMI8658 and up to two
+// ICM-45686 strapped to 0x68/0x69. The two body sensors are redundant (either
+// may be missing); the joint sensor is optional.
+enum VrImuBit : uint8_t {
+    VR_IMU_BODY_PRIMARY   = 0x01,  // q       is valid
+    VR_IMU_BODY_SECONDARY = 0x02,  // q_body2 is valid
+    VR_IMU_JOINT          = 0x04,  // q_joint is valid
+};
+
 // ── Wire format: notification payload ──────────────────────────────────────
-// 28 bytes per notification, sent at ~100Hz when in VR mode
+// 61 bytes per notification, sent at ~100Hz when in VR mode.
+//
+// COMPATIBILITY: bytes 0..27 are frozen - byte-for-byte identical to the
+// original 28-byte report, with q still carrying the primary body orientation.
+// Everything from imu_present onward is appended, so a reader that takes the
+// first 28 bytes at fixed offsets and ignores trailing data stays correct.
+// Do not reorder or resize any field above imu_present.
 typedef struct __attribute__((packed)) {
     uint8_t  hand;           // 0=left, 1=right
     uint8_t  buttons;        // bit0=AX(trigger), bit1=BY(grip), bit2=CZ,
@@ -33,10 +50,16 @@ typedef struct __attribute__((packed)) {
     uint8_t  trigger_analog; // 0-255 (future use, currently 0 or 255)
     uint8_t  battery_pct;    // 0-100
     uint32_t seq;            // rolling sequence number
-    float    q[4];           // Quaternion (w, x, y, z) - 16 bytes
+    float    q[4];           // Quaternion (w, x, y, z) - primary body IMU
+    // ── appended below; older readers stop here ──
+    uint8_t  imu_present;    // bitmask of VrImuBit; absent slots hold identity
+    float    q_body2[4];     // secondary body IMU (redundant with q)
+    float    q_joint[4];     // joint IMU
 } VrGattInputReport;
 
-static_assert(sizeof(VrGattInputReport) == 28, "VrGattInputReport must be 28 bytes");
+static_assert(sizeof(VrGattInputReport) == 61, "VrGattInputReport must be 61 bytes");
+static_assert(offsetof(VrGattInputReport, imu_present) == 28,
+              "legacy 28-byte prefix must stay frozen for older mod builds");
 
 // ── Control commands (written by bridge to 0xCF02) ─────────────────────────
 enum VrGattCommand : uint8_t {
@@ -52,9 +75,20 @@ enum VrGattCommand : uint8_t {
 // Returns true on success.
 bool vrGattInit(NimBLEServer* pServer, bool isRight);
 
+// Orientation set gathered from whichever IMUs this unit actually has.
+// Slots flagged absent in `present` are ignored and sent as identity.
+typedef struct {
+    uint8_t present;    // bitmask of VrImuBit
+    float   body1[4];   // primary body IMU (w, x, y, z)
+    float   body2[4];   // secondary body IMU
+    float   joint[4];   // joint IMU
+} VrImuSet;
+
 // Builds a VrGattInputReport from the HalfPacket and sends a BLE notification.
+// Passing nullptr for `imus` sends identity for all three slots with
+// present = 0, which is what a unit with no working IMU reports.
 // Returns true if notification was sent (client subscribed).
-bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct, const float q[4] = nullptr);
+bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct, const VrImuSet* imus = nullptr);
 
 // Check if a VR GATT client is connected and subscribed to notifications.
 bool vrGattClientConnected();

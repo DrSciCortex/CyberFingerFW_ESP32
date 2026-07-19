@@ -8,6 +8,7 @@
 
 #include "vr_gatt.h"
 #include <Arduino.h>
+#include <string.h>          // memcpy into packed (unaligned) report fields
 #include "HWCDC.h"
 
 extern HWCDC USBSerial;
@@ -126,7 +127,7 @@ bool vrGattInit(NimBLEServer* pServer, bool isRight) {
 
 // ── Send Input ─────────────────────────────────────────────────────────────
 
-bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct, const float q[4]) {
+bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct, const VrImuSet* imus) {
     if (!s_inputChar || !s_subscribed) return false;
 
     VrGattInputReport rpt{};
@@ -149,18 +150,23 @@ bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct, const float q[
     rpt.battery_pct = batteryPct;
     rpt.seq = ++s_seq;
 
-    // Add quaternion data
-    if (q) {
-        rpt.q[0] = q[0];
-        rpt.q[1] = q[1];
-        rpt.q[2] = q[2];
-        rpt.q[3] = q[3];
-    } else {
-        rpt.q[0] = 1.0f; // Identity
-        rpt.q[1] = 0.0f;
-        rpt.q[2] = 0.0f;
-        rpt.q[3] = 0.0f;
-    }
+    // Add quaternion data. Absent slots are sent as identity so a reader that
+    // ignores imu_present still gets something well-formed rather than zeros.
+    //
+    // memcpy, not a helper taking float*: q_body2 and q_joint sit at unaligned
+    // offsets (29 and 45) inside the packed struct. Handing a pointer to a
+    // packed member to a function loses the compiler's byte-wise access and
+    // Xtensa faults on the unaligned load/store rather than fixing it up.
+    static const float kIdentity[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+
+    rpt.imu_present = imus ? imus->present : 0;
+    const float* qBody1 = (rpt.imu_present & VR_IMU_BODY_PRIMARY)   ? imus->body1 : kIdentity;
+    const float* qBody2 = (rpt.imu_present & VR_IMU_BODY_SECONDARY) ? imus->body2 : kIdentity;
+    const float* qJoint = (rpt.imu_present & VR_IMU_JOINT)          ? imus->joint : kIdentity;
+
+    memcpy(rpt.q,       qBody1, sizeof(rpt.q));
+    memcpy(rpt.q_body2, qBody2, sizeof(rpt.q_body2));
+    memcpy(rpt.q_joint, qJoint, sizeof(rpt.q_joint));
 
     s_inputChar->setValue((uint8_t*)&rpt, sizeof(rpt));
     s_inputChar->notify();
