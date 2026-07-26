@@ -196,34 +196,85 @@ static void imuIdentify() {
   }
 }
 
-// Settle the ICM-45686 data byte order empirically. SlimeVR's own two drivers
-// disagree: the nRF register path parses big-endian, the ESP FIFO path parses
-// little-endian. Hold the unit STILL - at 4g FS, gravity puts ~8192 (0x2000)
-// on one axis and ~0 on the other two. Whichever row shows that is correct.
-static void imuEndianCheck(uint8_t addr) {
+// Magnitude of a raw accel triple, in g. Held still, ANY orientation should
+// give 1.000g - that invariant is what makes this check orientation-free.
+static float accelMagG(int16_t x, int16_t y, int16_t z) {
+  float fx = (float)x, fy = (float)y, fz = (float)z;
+  return sqrtf(fx * fx + fy * fy + fz * fz) / VR_ACCEL_LSB_PER_G;
+}
+
+// Settle the ICM-45686 data byte order empirically, and confirm the full-scale
+// range actually took. SlimeVR's own two drivers disagree on byte order: the
+// nRF register path parses big-endian, the ESP FIFO path little-endian.
+//
+// Hold the unit STILL. The correct row is the one whose magnitude reads
+// ~1.000g. A wrong FS range shows up as a magnitude that is off by a clean
+// factor (e.g. 4.00g if the part is still at 4g while we scale for 16g).
+static void imuEndianCheck(const char* label, uint8_t addr) {
   uint8_t b[6];
   Wire.beginTransmission(addr);
   Wire.write(0x00);                        // ACCEL_DATA block
   if (Wire.endTransmission(false) != 0) {
-    USBSerial.println("[IMU] endian check: addr write failed");
+    USBSerial.printf("[IMU] %s endian check: addr write failed\n", label);
     return;
   }
   if (Wire.requestFrom((int)addr, 6) != 6) {
-    USBSerial.println("[IMU] endian check: burst read failed");
+    USBSerial.printf("[IMU] %s endian check: burst read failed\n", label);
     return;
   }
   for (uint8_t i = 0; i < 6; i++) b[i] = Wire.read();
 
-  USBSerial.printf("[IMU] raw  %02X %02X  %02X %02X  %02X %02X\n",
-                   b[0], b[1], b[2], b[3], b[4], b[5]);
-  USBSerial.printf("[IMU]  BE  %6d %6d %6d\n",
-                   (int16_t)((b[0] << 8) | b[1]),
-                   (int16_t)((b[2] << 8) | b[3]),
-                   (int16_t)((b[4] << 8) | b[5]));
-  USBSerial.printf("[IMU]  LE  %6d %6d %6d\n",
-                   (int16_t)((b[1] << 8) | b[0]),
-                   (int16_t)((b[3] << 8) | b[2]),
-                   (int16_t)((b[5] << 8) | b[4]));
+  int16_t be[3] = { (int16_t)((b[0] << 8) | b[1]),
+                    (int16_t)((b[2] << 8) | b[3]),
+                    (int16_t)((b[4] << 8) | b[5]) };
+  int16_t le[3] = { (int16_t)((b[1] << 8) | b[0]),
+                    (int16_t)((b[3] << 8) | b[2]),
+                    (int16_t)((b[5] << 8) | b[4]) };
+
+  USBSerial.printf("[IMU] %s @0x%02X raw  %02X %02X  %02X %02X  %02X %02X\n",
+                   label, addr, b[0], b[1], b[2], b[3], b[4], b[5]);
+  USBSerial.printf("[IMU] %s   BE  %6d %6d %6d  |a|=%.3fg\n",
+                   label, be[0], be[1], be[2], accelMagG(be[0], be[1], be[2]));
+  USBSerial.printf("[IMU] %s   LE  %6d %6d %6d  |a|=%.3fg  <-- expect ~1.000\n",
+                   label, le[0], le[1], le[2], accelMagG(le[0], le[1], le[2]));
+}
+
+// Confirm the QMI8658 lands on the same 2048 LSB/g scale as the ICMs. This
+// path goes through SensorLib rather than raw registers, so the range is only
+// as good as the enum we passed it - held still, |a| must read ~1.000g.
+static void qmiScaleCheck() {
+  // Sample over time rather than trusting the first reading. The configured
+  // low-pass filter starts from zero state, so samples taken shortly after
+  // enable ramp UP toward the true value and read low - which is exactly what
+  // a premature check reports as a bogus scale error.
+  //
+  // A settling artifact converges toward 1.000g across these rows; a genuine
+  // scale/gain error stays put.
+  const uint16_t marks_ms[] = {50, 150, 300, 600};
+  uint32_t start = millis();
+  bool any = false;
+
+  for (uint8_t m = 0; m < sizeof(marks_ms) / sizeof(marks_ms[0]); m++) {
+    while (millis() - start < marks_ms[m]) {
+      qmi8658_update();
+      delay(2);
+    }
+    int16_t a[3] = {0, 0, 0};
+    qmi8658_get_accel(a);
+    if (!a[0] && !a[1] && !a[2]) {
+      USBSerial.printf("[IMU] QMI @%4ums  (no sample yet)\n", marks_ms[m]);
+      continue;
+    }
+    any = true;
+    USBSerial.printf("[IMU] QMI @%4ums  %6d %6d %6d  |a|=%.3fg\n",
+                     marks_ms[m], a[0], a[1], a[2], accelMagG(a[0], a[1], a[2]));
+  }
+
+  if (!any) {
+    USBSerial.println("[IMU] QMI scale check: sensor produced no samples");
+  } else {
+    USBSerial.println("[IMU] QMI  <-- last row should be ~1.000g once settled");
+  }
 }
 
 // Print every address that ACKs. Cheap, and the only reliable way to tell
@@ -889,8 +940,12 @@ void setup() {
   // lands late enough in setup() to be visible on the USB CDC monitor, which
   // the host has usually not attached yet at bus-init time. It also gives the
   // I2C bus and the part more time to settle before the first transaction.
-  i2cScan();
-  imuIdentify();
+  // Bus inventory: only useful when bringing up or reworking hardware.
+  if (cfg.boot_debug) {
+    i2cScan();
+    imuIdentify();
+  }
+
   // Each ICM is initialized against its own address and fusion state. Both
   // parts report the same WHO_AM_I, so which one is the body sensor and which
   // is the joint sensor is decided purely by the AP_AD0 strapping - see the
@@ -905,14 +960,20 @@ void setup() {
                    ICM_ADDR_JOINT, g_hasJointImu ? "OK" : "not present",
                    icm45686_whoami(ICM_JOINT));
 
-  if (g_hasImu) {
-    delay(50);            // let a sample land after power-on
-    imuEndianCheck(ICM_ADDR_BODY);
-  }
-
   g_hasQmi = qmi8658_init();
   USBSerial.printf("[IMU] QMI8658 @0x%02X %s\n", 0x6B,
                    g_hasQmi ? "initialized successfully." : "not present.");
+
+  // Scale / byte-order verification. Costs ~700ms, most of it waiting out the
+  // QMI's startup transient, so it stays behind boot_debug. Held still, every
+  // sensor must report |a| ~= 1.000g - that invariant catches a wrong
+  // full-scale range or a byte-order regression in one glance.
+  if (cfg.boot_debug) {
+    delay(50);            // let a sample land after power-on
+    if (g_hasImu)      imuEndianCheck("body ", ICM_ADDR_BODY);
+    if (g_hasJointImu) imuEndianCheck("joint", ICM_ADDR_JOINT);
+    if (g_hasQmi)      qmiScaleCheck();
+  }
 
     // zero‑out history
   for (auto &p : history) p = {0,0,0};
