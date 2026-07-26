@@ -50,7 +50,9 @@ class VrControlCallbacks : public NimBLECharacteristicCallbacks {
                     rpt.hand = s_isRight ? 1 : 0;
                     rpt.buttons = vrDirectMode ? 0xFF : 0x00;
                     rpt.seq = 0;
-                    s_inputChar->setValue((uint8_t*)&rpt, sizeof(rpt));
+                    // imu_present is 0 here, so only the header is meaningful -
+                    // send exactly that, consistent with the variable format.
+                    s_inputChar->setValue((uint8_t*)&rpt, VR_GATT_HEADER_LEN);
                     s_inputChar->notify();
                 }
                 break;
@@ -101,10 +103,10 @@ bool vrGattInit(NimBLEServer* pServer, bool isRight) {
     );
     s_inputChar->setCallbacks(&s_inputCb);
 
-    // Set initial value
+    // Set initial value: header only, imu_present = 0 (no slots yet).
     VrGattInputReport initRpt{};
     initRpt.hand = isRight ? 1 : 0;
-    s_inputChar->setValue((uint8_t*)&initRpt, sizeof(initRpt));
+    s_inputChar->setValue((uint8_t*)&initRpt, VR_GATT_HEADER_LEN);
 
     // Control characteristic: Write (Bridge → ESP32)
     s_ctrlChar = s_service->createCharacteristic(
@@ -150,36 +152,38 @@ bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct, const VrImuSet
     rpt.battery_pct = batteryPct;
     rpt.seq = ++s_seq;
 
-    // Add quaternion data. Absent slots are sent as identity so a reader that
-    // ignores imu_present still gets something well-formed rather than zeros.
-    //
-    // memcpy, not a helper taking float*: q_body2 and q_joint sit at unaligned
-    // offsets (29 and 45) inside the packed struct. Handing a pointer to a
-    // packed member to a function loses the compiler's byte-wise access and
-    // Xtensa faults on the unaligned load/store rather than fixing it up.
+    // The primary body orientation always occupies the frozen q slot, so an
+    // old reader taking the first 28 bytes still gets a valid body rotation.
     static const float kIdentity[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+    const uint8_t present = imus ? imus->present : 0;
+    rpt.imu_present = present;
+    memcpy(rpt.q, (present & VR_IMU_BODY_PRIMARY) ? imus->body1 : kIdentity, sizeof(rpt.q));
 
-    rpt.imu_present = imus ? imus->present : 0;
-    const float* qBody1 = (rpt.imu_present & VR_IMU_BODY_PRIMARY)   ? imus->body1 : kIdentity;
-    const float* qBody2 = (rpt.imu_present & VR_IMU_BODY_SECONDARY) ? imus->body2 : kIdentity;
-    const float* qJoint = (rpt.imu_present & VR_IMU_JOINT)          ? imus->joint : kIdentity;
+    // Build the variable-length notification: the frozen header, then only the
+    // slots flagged in imu_present, packed contiguously in slot order. Omitting
+    // absent slots (rather than zero-filling them) is the whole point - it is
+    // what reduces airtime when IMUs are dropped. See vr_gatt.h for the order.
+    //
+    // memcpy throughout: the tail bytes land at unaligned offsets in the buffer,
+    // and the source quats live in the packed max-layout struct; byte-wise copy
+    // avoids the Xtensa unaligned-access fault that a float* deref would raise.
+    uint8_t buf[VR_GATT_MAX_REPORT];
+    memcpy(buf, &rpt, VR_GATT_HEADER_LEN);        // frozen prefix + imu_present
+    size_t n = VR_GATT_HEADER_LEN;
 
-    memcpy(rpt.q,       qBody1, sizeof(rpt.q));
-    memcpy(rpt.q_body2, qBody2, sizeof(rpt.q_body2));
-    memcpy(rpt.q_joint, qJoint, sizeof(rpt.q_joint));
+    if (present & VR_IMU_BODY_PRIMARY) {           // quat already in header q
+        memcpy(buf + n, imus->a_body1, sizeof(imus->a_body1)); n += sizeof(imus->a_body1);
+    }
+    if (present & VR_IMU_BODY_SECONDARY) {
+        memcpy(buf + n, imus->body2,   sizeof(imus->body2));   n += sizeof(imus->body2);
+        memcpy(buf + n, imus->a_body2, sizeof(imus->a_body2)); n += sizeof(imus->a_body2);
+    }
+    if (present & VR_IMU_JOINT) {
+        memcpy(buf + n, imus->joint,   sizeof(imus->joint));   n += sizeof(imus->joint);
+        memcpy(buf + n, imus->a_joint, sizeof(imus->a_joint)); n += sizeof(imus->a_joint);
+    }
 
-    // Raw accel per slot. Absent slots stay zero (rpt was value-initialised),
-    // which is distinguishable from a real reading via imu_present.
-    static const int16_t kZeroAccel[3] = {0, 0, 0};
-    const int16_t* aBody1 = (rpt.imu_present & VR_IMU_BODY_PRIMARY)   ? imus->a_body1 : kZeroAccel;
-    const int16_t* aBody2 = (rpt.imu_present & VR_IMU_BODY_SECONDARY) ? imus->a_body2 : kZeroAccel;
-    const int16_t* aJoint = (rpt.imu_present & VR_IMU_JOINT)          ? imus->a_joint : kZeroAccel;
-
-    memcpy(rpt.a_body1, aBody1, sizeof(rpt.a_body1));
-    memcpy(rpt.a_body2, aBody2, sizeof(rpt.a_body2));
-    memcpy(rpt.a_joint, aJoint, sizeof(rpt.a_joint));
-
-    s_inputChar->setValue((uint8_t*)&rpt, sizeof(rpt));
+    s_inputChar->setValue(buf, n);
     s_inputChar->notify();
 
     return true;

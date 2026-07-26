@@ -33,13 +33,28 @@ enum VrImuBit : uint8_t {
 };
 
 // ── Wire format: notification payload ──────────────────────────────────────
-// 61 bytes per notification, sent at ~100Hz when in VR mode.
+// VARIABLE length, sent at ~100Hz when in VR mode. The struct below is the
+// MAXIMUM layout (all IMU slots present, 79 bytes). The actual notification
+// carries the frozen header plus ONLY the slots flagged in imu_present, packed
+// contiguously - absent/dropped slots are omitted from the wire entirely.
+// Omitting them shrinks airtime, which is what lets one host schedule two
+// peripherals at a tight connection interval without starving either.
+//
+// What is actually sent:
+//   [0 .. VR_GATT_HEADER_LEN-1]  always: frozen prefix + imu_present
+//   then appended in THIS ORDER, each block only if its bit is set:
+//     VR_IMU_BODY_PRIMARY    a_body1[3]                (quat is in header q)
+//     VR_IMU_BODY_SECONDARY  q_body2[4] + a_body2[3]
+//     VR_IMU_JOINT           q_joint[4] + a_joint[3]
 //
 // COMPATIBILITY: bytes 0..27 are frozen - byte-for-byte identical to the
-// original 28-byte report, with q still carrying the primary body orientation.
-// Everything from imu_present onward is appended, so a reader that takes the
-// first 28 bytes at fixed offsets and ignores trailing data stays correct.
-// Do not reorder or resize any field above imu_present.
+// original 28-byte report, with q carrying the PRIMARY body orientation (from
+// whichever body sensor is active; the two body sensors are redundant). A
+// reader that takes the first 28 bytes at fixed offsets and ignores the rest
+// stays correct. Do not reorder or resize any field above imu_present.
+//
+// A variable-length reader MUST switch on imu_present, not on total length -
+// different slot combinations can yield the same byte count.
 typedef struct __attribute__((packed)) {
     uint8_t  hand;           // 0=left, 1=right
     uint8_t  buttons;        // bit0=AX(trigger), bit1=BY(grip), bit2=CZ,
@@ -79,9 +94,16 @@ typedef struct __attribute__((packed)) {
 // Divide a_* by this to get g.
 #define VR_ACCEL_LSB_PER_G 2048.0f
 
-static_assert(sizeof(VrGattInputReport) == 79, "VrGattInputReport must be 79 bytes");
+// Always-present part of every notification: the frozen 28-byte prefix plus the
+// one-byte imu_present that follows it. offsetof(q_body2) is the first byte of
+// the variable tail, i.e. exactly this length.
+#define VR_GATT_HEADER_LEN  (offsetof(VrGattInputReport, q_body2))   // 29
+#define VR_GATT_MAX_REPORT  (sizeof(VrGattInputReport))              // 79
+
+static_assert(sizeof(VrGattInputReport) == 79, "VrGattInputReport max must be 79 bytes");
 static_assert(offsetof(VrGattInputReport, imu_present) == 28,
               "legacy 28-byte prefix must stay frozen for older mod builds");
+static_assert(VR_GATT_HEADER_LEN == 29, "header is frozen prefix + imu_present");
 
 // ── Control commands (written by bridge to 0xCF02) ─────────────────────────
 enum VrGattCommand : uint8_t {

@@ -950,10 +950,22 @@ void setup() {
   // parts report the same WHO_AM_I, so which one is the body sensor and which
   // is the joint sensor is decided purely by the AP_AD0 strapping - see the
   // address defines in icm45686_handler.h.
+  //
+  // The ICM body sensor is DROPPED by default: it is redundant with the onboard
+  // QMI8658, and omitting it removes a quaternion+accel from every BLE packet,
+  // which eases scheduling two peripherals on one host. Define VR_STREAM_ICM_BODY
+  // to stream both body sensors again. Tradeoff: the ICM has a 2000dps gyro vs
+  // the QMI's 1024dps, so the QMI can saturate first on very fast motion.
+#ifdef VR_STREAM_ICM_BODY
   g_hasImu = icm45686_init(ICM_BODY, ICM_ADDR_BODY);
   USBSerial.printf("[IMU] ICM-45686 body  @0x%02X %s (WHO_AM_I=0x%02X)\n",
                    ICM_ADDR_BODY, g_hasImu ? "OK" : "not present",
                    icm45686_whoami(ICM_BODY));
+#else
+  g_hasImu = false;
+  USBSerial.println("[IMU] ICM-45686 body dropped from protocol "
+                    "(build default; define VR_STREAM_ICM_BODY to keep)");
+#endif
 
   g_hasJointImu = icm45686_init(ICM_JOINT, ICM_ADDR_JOINT);
   USBSerial.printf("[IMU] ICM-45686 joint @0x%02X %s (WHO_AM_I=0x%02X)\n",
@@ -1353,7 +1365,12 @@ void loop() {
 
   // Update whichever IMUs this unit actually has. Absent sensors cost no I2C
   // traffic and are reported via the imu_present bitmask.
+  // The PRIMARY body slot carries the best available body orientation, so it
+  // maps to the ICM body when that is streamed and to the QMI otherwise. The
+  // two body sensors are redundant; the SECONDARY slot is only used when BOTH
+  // are streamed. The bridge learns which slots exist from imu_present.
   VrImuSet imus{};
+#ifdef VR_STREAM_ICM_BODY
   if (g_hasImu) {
     icm45686_update(ICM_BODY);
     icm45686_get_quat(ICM_BODY, imus.body1);
@@ -1366,6 +1383,15 @@ void loop() {
     qmi8658_get_accel(imus.a_body2);
     imus.present |= VR_IMU_BODY_SECONDARY;
   }
+#else
+  // ICM body dropped: QMI is the sole body sensor and takes the PRIMARY slot.
+  if (g_hasQmi) {
+    qmi8658_update();
+    qmi8658_get_quat(imus.body1);
+    qmi8658_get_accel(imus.a_body1);
+    imus.present |= VR_IMU_BODY_PRIMARY;
+  }
+#endif
   if (g_hasJointImu) {
     icm45686_update(ICM_JOINT);
     icm45686_get_quat(ICM_JOINT, imus.joint);
@@ -1377,6 +1403,23 @@ void loop() {
   // Each side independently sends its own data via BLE GATT.
   // No ESP-NOW gamepad merge. No Xbox HID reports.
   vrGattSendInput(local, g_batteryPct, &imus);
+
+  // Report the connection interval the host actually granted. Each unit is one
+  // peripheral with one host connection, so left and right log their own value;
+  // if they differ, the host is failing to give both the requested ~7.5ms and
+  // that scheduling contention - not payload - is the latency source.
+  if (cfg.boot_debug) {
+    static uint32_t s_lastConnLog = 0;
+    if (millis() - s_lastConnLog > 5000) {
+      s_lastConnLog = millis();
+      NimBLEServer* srv = NimBLEDevice::getServer();
+      if (srv && srv->getConnectedCount() > 0) {
+        NimBLEConnInfo ci = srv->getPeerInfo(0);
+        USBSerial.printf("[BLE] conn itvl = %.2f ms\n",
+                         ci.getConnInterval() * 1.25f);
+      }
+    }
+  }
 
   // Still respect loop timing
   uint32_t elapsed = micros() - loop_start;

@@ -85,8 +85,18 @@ bool icm45686_init(uint8_t instance, uint8_t addr) {
     s_addr[instance]   = addr;
     s_whoami[instance] = 0;
 
-    uint8_t whoami = 0;
-    if (!read_bytes(addr, REG_WHO_AM_I, &whoami, 1)) return false;
+    // The first I2C transaction to a given part after bus init can NACK even
+    // when it is present, so a single WHO_AM_I read yields false negatives -
+    // this bit us once boot_debug (whose bus scan used to absorb that first
+    // NACK) was off and the ICM body was dropped, leaving the joint read as the
+    // first ICM transaction. Retry before concluding the part is absent.
+    uint8_t whoami  = 0;
+    bool    read_ok = false;
+    for (uint8_t i = 0; i < 4 && !read_ok; i++) {
+        read_ok = read_bytes(addr, REG_WHO_AM_I, &whoami, 1);
+        if (!read_ok) delay(2);
+    }
+    if (!read_ok) return false;
     s_whoami[instance] = whoami;
 
     if (whoami == 0x00 || whoami == 0xFF) return false;
