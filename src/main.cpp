@@ -1410,8 +1410,17 @@ void loop() {
   // that scheduling contention - not payload - is the latency source.
   if (cfg.boot_debug) {
     static uint32_t s_lastConnLog = 0;
-    if (millis() - s_lastConnLog > 5000) {
+    if (millis() - s_lastConnLog > 2000) {
       s_lastConnLog = millis();
+      // imu_present is what the firmware actually puts on the wire this frame.
+      // bit0=body-primary, bit1=body-secondary, bit2=joint. If bit2 is set here
+      // but the joint is missing in the GUI, the data IS being sent and the
+      // problem is downstream (bridge/GUI); if bit2 is clear, it is firmware.
+      USBSerial.printf("[VR] imu_present=0x%02X (P=%d S=%d J=%d)\n",
+                       imus.present,
+                       (imus.present & VR_IMU_BODY_PRIMARY)   ? 1 : 0,
+                       (imus.present & VR_IMU_BODY_SECONDARY) ? 1 : 0,
+                       (imus.present & VR_IMU_JOINT)          ? 1 : 0);
       NimBLEServer* srv = NimBLEDevice::getServer();
       if (srv && srv->getConnectedCount() > 0) {
         NimBLEConnInfo ci = srv->getPeerInfo(0);

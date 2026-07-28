@@ -65,44 +65,45 @@ typedef struct __attribute__((packed)) {
     uint8_t  trigger_analog; // 0-255 (future use, currently 0 or 255)
     uint8_t  battery_pct;    // 0-100
     uint32_t seq;            // rolling sequence number
-    float    q[4];           // Quaternion (w, x, y, z) - primary body IMU
+    float    q[4];           // Quaternion (w, x, y, z) - PRIMARY body IMU
     // ── appended below; older readers stop here ──
-    uint8_t  imu_present;    // bitmask of VrImuBit; absent slots hold identity
-    float    q_body2[4];     // secondary body IMU (redundant with q)
-    float    q_joint[4];     // joint IMU
-    // Raw body-frame acceleration, one vector per IMU slot, same order as the
-    // quaternions above. Absent slots are zero.
+    uint8_t  imu_present;    // bitmask of VrImuBit
+    // Optional slots, in WIRE ORDER: each present slot contributes its block,
+    // grouped per slot (quaternion then accel). The primary body quaternion is
+    // NOT repeated here - it lives in q above; only its accel appears. In a
+    // real notification, blocks whose bit is clear in imu_present are OMITTED,
+    // so every offset past imu_present shifts. This struct is only the layout
+    // for the all-present case; parse the wire by imu_present, not by offset.
     //
-    // Units: LSB at VR_ACCEL_LSB_PER_G (+/-16g full scale on every sensor).
-    // NOT gravity-corrected, and in SENSOR frame, not world frame. A consumer
-    // wanting linear acceleration removes gravity using the quaternion from
-    // this same packet - which is why they are sent together:
-    //
+    // Accel units: LSB at VR_ACCEL_LSB_PER_G (+/-16g on every sensor), raw,
+    // NOT gravity-corrected, SENSOR frame. Remove gravity with the slot's own
+    // quaternion (same packet, same sample):
     //   gx = 2*(q1*q3 - q0*q2)
     //   gy = 2*(q0*q1 + q2*q3)
     //   gz = q0*q0 - q1*q1 - q2*q2 + q3*q3
     //   linear[i] = accel[i]/VR_ACCEL_LSB_PER_G*9.80665 - g[i]*9.80665   [m/s^2]
-    //
-    // That is the same derivation SlimeVR uses, so a bridge emulating SlimeVR
-    // trackers can feed the result straight into PACKET_ACCEL (4) alongside
-    // the quaternion in PACKET_ROTATION_DATA (17).
-    int16_t  a_body1[3];     // primary body IMU
-    int16_t  a_body2[3];     // secondary body IMU
-    int16_t  a_joint[3];     // joint IMU
+    // Same derivation SlimeVR uses: feed linear accel to PACKET_ACCEL (4) and
+    // the quaternion to PACKET_ROTATION_DATA (17).
+    int16_t  a_body1[3];     // PRIMARY body accel      (present iff bit0)
+    float    q_body2[4];     // SECONDARY body quat     (present iff bit1)
+    int16_t  a_body2[3];     // SECONDARY body accel    (present iff bit1)
+    float    q_joint[4];     // JOINT quat              (present iff bit2)
+    int16_t  a_joint[3];     // JOINT accel             (present iff bit2)
 } VrGattInputReport;
 
 // Divide a_* by this to get g.
 #define VR_ACCEL_LSB_PER_G 2048.0f
 
 // Always-present part of every notification: the frozen 28-byte prefix plus the
-// one-byte imu_present that follows it. offsetof(q_body2) is the first byte of
-// the variable tail, i.e. exactly this length.
-#define VR_GATT_HEADER_LEN  (offsetof(VrGattInputReport, q_body2))   // 29
-#define VR_GATT_MAX_REPORT  (sizeof(VrGattInputReport))              // 79
+// one-byte imu_present that follows it. The variable tail begins right after.
+#define VR_GATT_HEADER_LEN  (offsetof(VrGattInputReport, imu_present) + 1)  // 29
+#define VR_GATT_MAX_REPORT  (sizeof(VrGattInputReport))                     // 79
 
 static_assert(sizeof(VrGattInputReport) == 79, "VrGattInputReport max must be 79 bytes");
 static_assert(offsetof(VrGattInputReport, imu_present) == 28,
               "legacy 28-byte prefix must stay frozen for older mod builds");
+static_assert(offsetof(VrGattInputReport, a_body1) == VR_GATT_HEADER_LEN,
+              "variable tail must start immediately after imu_present");
 static_assert(VR_GATT_HEADER_LEN == 29, "header is frozen prefix + imu_present");
 
 // ── Control commands (written by bridge to 0xCF02) ─────────────────────────
