@@ -30,6 +30,12 @@ enum VrImuBit : uint8_t {
     VR_IMU_BODY_PRIMARY   = 0x01,  // q       is valid
     VR_IMU_BODY_SECONDARY = 0x02,  // q_body2 is valid
     VR_IMU_JOINT          = 0x04,  // q_joint is valid
+    VR_REPORT_EXT         = 0x80,  // not an IMU: one more byte (VrExtButton bits) ends the report (v1.3.3+)
+};
+
+// ── Extension byte (present iff VR_REPORT_EXT): buttons beyond the frozen 8 ─
+enum VrExtButton : uint8_t {
+    VR_BTN2_PWR = 0x01,            // the pink power key: a short press, as a click (~80 ms)
 };
 
 // ── Wire format: notification payload ──────────────────────────────────────
@@ -46,6 +52,10 @@ enum VrImuBit : uint8_t {
 //     VR_IMU_BODY_PRIMARY    a_body1[3]                (quat is in header q)
 //     VR_IMU_BODY_SECONDARY  q_body2[4] + a_body2[3]
 //     VR_IMU_JOINT           q_joint[4] + a_joint[3]
+//     VR_REPORT_EXT          one byte of VrExtButton bits (always sent since v1.3.3)
+// The extension byte comes last, so a reader that decodes the IMU blocks by
+// imu_present and ignores what follows stays correct; the report lengths it
+// yields (30/36/52/58/74/80) never match the legacy fixed tails (61/79).
 //
 // COMPATIBILITY: bytes 0..27 are frozen - byte-for-byte identical to the
 // original 28-byte report, with q carrying the PRIMARY body orientation (from
@@ -98,6 +108,7 @@ typedef struct __attribute__((packed)) {
 // one-byte imu_present that follows it. The variable tail begins right after.
 #define VR_GATT_HEADER_LEN  (offsetof(VrGattInputReport, imu_present) + 1)  // 29
 #define VR_GATT_MAX_REPORT  (sizeof(VrGattInputReport))                     // 79
+#define VR_GATT_MAX_WIRE    (VR_GATT_MAX_REPORT + 1)                        // 80: + the extension byte
 
 static_assert(sizeof(VrGattInputReport) == 79, "VrGattInputReport max must be 79 bytes");
 static_assert(offsetof(VrGattInputReport, imu_present) == 28,
@@ -111,7 +122,19 @@ enum VrGattCommand : uint8_t {
     VR_CMD_ENTER_VR   = 0x01,
     VR_CMD_EXIT_VR    = 0x02,
     VR_CMD_QUERY_MODE = 0x03,
+    VR_CMD_HAPTIC     = 0x10,   // vibrate: VrGattHapticCommand (haptics.h)
 };
+
+// VR_CMD_HAPTIC: a SteamVR haptic event, forwarded by the bridge (write without response). amplitude 0 stops
+// the motor; a shorter frequency field (older bridges) means 0. Boards without the DRV2605L ignore it.
+typedef struct __attribute__((packed)) {
+    uint8_t  cmd;            // VR_CMD_HAPTIC
+    uint8_t  amplitude;      // 0..255
+    uint16_t duration_ms;    // little-endian
+    uint16_t frequency_hz;   // little-endian; 0: unspecified
+} VrGattHapticCommand;
+
+static_assert(sizeof(VrGattHapticCommand) == 6, "VrGattHapticCommand must be 6 bytes");
 
 // ── API ────────────────────────────────────────────────────────────────────
 
@@ -135,8 +158,10 @@ typedef struct {
 // Builds a VrGattInputReport from the HalfPacket and sends a BLE notification.
 // Passing nullptr for `imus` sends identity for all three slots with
 // present = 0, which is what a unit with no working IMU reports.
+// buttons2: VrExtButton bits, sent in the extension byte.
 // Returns true if notification was sent (client subscribed).
-bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct, const VrImuSet* imus = nullptr);
+bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct, const VrImuSet* imus = nullptr,
+                     uint8_t buttons2 = 0);
 
 // Check if a VR GATT client is connected and subscribed to notifications.
 bool vrGattClientConnected();

@@ -41,6 +41,7 @@
 #include "vr_gatt.h"
 #include "HWCDC.h"
 #include <Adafruit_DRV2605.h>
+#include "haptics.h"
 
 
 HWCDC USBSerial;
@@ -483,6 +484,10 @@ CyberFingerBLE *compositeHID;
 // Power-key shutdown-notice state. The key is serviced via the AXP2101 PMU
 // IRQ (see the main loop), not by polling a GPIO level.
 bool poweroff_notice = false;
+
+// A short press of the power (pink) key is reported as a click this long in the VR report (VR_BTN2_PWR).
+#define PINK_CLICK_MS 80
+static uint32_t g_pinkClickUntil = 0;
 
 // VR Direct Mode state — when true, gamepad HID is suppressed and
 // button/joy data is sent via BLE GATT to the PC bridge.
@@ -1116,6 +1121,7 @@ void setup() {
     } else {
       USBSerial.println("[HAPTICS] No DRV2605L on I2C - haptics disabled.");
     }
+    hapticsBegin(&drv, g_hasHaptics);   // the bridge's vibration requests (VR_CMD_HAPTIC)
   }
 
   if (cfg.right_not_left) {
@@ -1324,8 +1330,11 @@ void loop() {
     }
 
     if (power.isPekeyShortPressIrq()) {
-      // ── Short press: reserved for a future action ──
-      // TODO emit another button press event
+      // ── Short press: a click of the pink button in the VR report (VR_BTN2_PWR) ──
+      // The PMU flags it once the key is released; that is all we rely on (which edge interrupt means
+      // "pressed" is ambiguous). The bridge makes the left one SteamVR's system button, the right one the mic.
+      g_pinkClickUntil = millis() + PINK_CLICK_MS;
+      USBSerial.println("Button Power short press");
     }
 
     // Always clear: de-asserts the IRQ line and drops VBUS/other events we ignore.
@@ -1407,7 +1416,8 @@ void loop() {
   // ── VR DIRECT MODE ──
   // Each side independently sends its own data via BLE GATT.
   // No ESP-NOW gamepad merge. No Xbox HID reports.
-  vrGattSendInput(local, g_batteryPct, &imus);
+  const uint8_t buttons2 = ((int32_t)(g_pinkClickUntil - millis()) > 0) ? VR_BTN2_PWR : 0;
+  vrGattSendInput(local, g_batteryPct, &imus, buttons2);
 
   // Report the connection interval the host actually granted. Each unit is one
   // peripheral with one host connection, so left and right log their own value;
@@ -1434,6 +1444,9 @@ void loop() {
       }
     }
   }
+
+  // The bridge's vibration requests: driven here, on the task that owns the I2C bus (haptics.h).
+  hapticsService(millis());
 
   // Still respect loop timing
   uint32_t elapsed = micros() - loop_start;

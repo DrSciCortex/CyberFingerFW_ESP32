@@ -10,6 +10,7 @@
 #include <Arduino.h>
 #include <string.h>          // memcpy into packed (unaligned) report fields
 #include "HWCDC.h"
+#include "haptics.h"
 
 extern HWCDC USBSerial;
 
@@ -55,6 +56,14 @@ class VrControlCallbacks : public NimBLECharacteristicCallbacks {
                     s_inputChar->setValue((uint8_t*)&rpt, VR_GATT_HEADER_LEN);
                     s_inputChar->notify();
                 }
+                break;
+            }
+            case VR_CMD_HAPTIC: {
+                // Recorded only: the main loop drives the motor (haptics.h). No logging here, these come often.
+                if (val.size() < 4) break;
+                VrGattHapticCommand c{};
+                memcpy(&c, val.data(), val.size() < sizeof(c) ? val.size() : sizeof(c));
+                hapticsRequest(c.amplitude, c.duration_ms, val.size() >= sizeof(c) ? c.frequency_hz : 0);
                 break;
             }
             default:
@@ -129,7 +138,7 @@ bool vrGattInit(NimBLEServer* pServer, bool isRight) {
 
 // ── Send Input ─────────────────────────────────────────────────────────────
 
-bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct, const VrImuSet* imus) {
+bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct, const VrImuSet* imus, uint8_t buttons2) {
     if (!s_inputChar || !s_subscribed) return false;
 
     VrGattInputReport rpt{};
@@ -155,8 +164,8 @@ bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct, const VrImuSet
     // The primary body orientation always occupies the frozen q slot, so an
     // old reader taking the first 28 bytes still gets a valid body rotation.
     static const float kIdentity[4] = {1.0f, 0.0f, 0.0f, 0.0f};
-    const uint8_t present = imus ? imus->present : 0;
-    rpt.imu_present = present;
+    const uint8_t present = imus ? (imus->present & (VR_IMU_BODY_PRIMARY | VR_IMU_BODY_SECONDARY | VR_IMU_JOINT)) : 0;
+    rpt.imu_present = present | VR_REPORT_EXT;                // the extension byte ends every report
     memcpy(rpt.q, (present & VR_IMU_BODY_PRIMARY) ? imus->body1 : kIdentity, sizeof(rpt.q));
 
     // Build the variable-length notification: the frozen header, then only the
@@ -167,7 +176,7 @@ bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct, const VrImuSet
     // memcpy throughout: the tail bytes land at unaligned offsets in the buffer,
     // and the source quats live in the packed max-layout struct; byte-wise copy
     // avoids the Xtensa unaligned-access fault that a float* deref would raise.
-    uint8_t buf[VR_GATT_MAX_REPORT];
+    uint8_t buf[VR_GATT_MAX_WIRE];
     memcpy(buf, &rpt, VR_GATT_HEADER_LEN);        // frozen prefix + imu_present
     size_t n = VR_GATT_HEADER_LEN;
 
@@ -182,6 +191,7 @@ bool vrGattSendInput(const HalfPacket& local, uint8_t batteryPct, const VrImuSet
         memcpy(buf + n, imus->joint,   sizeof(imus->joint));   n += sizeof(imus->joint);
         memcpy(buf + n, imus->a_joint, sizeof(imus->a_joint)); n += sizeof(imus->a_joint);
     }
+    buf[n++] = buttons2;                                      // VR_REPORT_EXT
 
     s_inputChar->setValue(buf, n);
     s_inputChar->notify();
