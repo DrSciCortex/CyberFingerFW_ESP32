@@ -16,7 +16,11 @@ void printFirmwareVersion() {
 // Semantic versioning
 #define FW_VERSION_MAJOR 1
 #define FW_VERSION_MINOR 4
+<<<<<<< HEAD
 #define FW_VERSION_PATCH 1
+=======
+#define FW_VERSION_PATCH 0
+>>>>>>> ed880d82cc7a1a41b4c397ad5b0d07bcbd1ea9fa
 
 // Optional pre-release / metadata
 // Set to empty string "" for official releases
