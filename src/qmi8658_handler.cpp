@@ -17,7 +17,17 @@
 #define QMI_ADDR QMI8658_L_SLAVE_ADDRESS
 
 static SensorQMI8658 qmi;
-static VQF vqf(0.01f);              // 100 Hz nominal; real dt passed per sample
+
+// Sample rate. LPF_MODE_3 is a fixed 13.37% of ODR, so the rate sets the filter: at 112 Hz it sat at ~15 Hz,
+// and its group delay made this sensor trail the ICM joint by 31-38 ms (measured on the host, 2026-09-26). At
+// 448 Hz it sits near 60 Hz. Every sample comes through the FIFO into VQF, so although the loop runs at ~100 Hz
+// nothing is dropped or aliased. 224.2 Hz (GYR_ODR_224_2Hz / ACC_ODR_250Hz) halves the I2C traffic if needed.
+static constexpr float kQmiRate    = 448.4f;
+static constexpr uint16_t kFifoMax = 64;                 // FIFO_SAMPLES_64: 143 ms of samples at 448 Hz
+static IMUdata s_accFifo[kFifoMax], s_gyrFifo[kFifoMax];
+
+static VQF vqf(1.0f / kQmiRate, 1.0f / kQmiRate);
+static float    s_period = 1.0f / kQmiRate;              // measured sample period: the part's clock runs off nominal
 static uint32_t last_update = 0;
 static bool     initialised = false;
 
@@ -38,23 +48,27 @@ bool qmi8658_init() {
     // part's maximum - the ICM runs 2000 dps, so a fast enough wrist flick can
     // saturate this one first.
     // LPF choice matters more than it looks: SensorLib's default is LPF_MODE_0,
-    // which is only 2.66% of ODR - about 3Hz here - and its group delay showed
-    // up as this sensor visibly lagging the ICM. LPF_MODE_3 is 13.37% of ODR
-    // (~17Hz accel, ~15Hz gyro), wide enough to track hand motion while still
-    // band-limiting ahead of the ~100Hz loop that consumes these samples.
+    // only 2.66% of ODR, and its group delay showed up as this sensor visibly
+    // lagging the ICM. LPF_MODE_3 is the widest mode, 13.37% of ODR; since the
+    // cutoff scales with ODR, the ODR is what's left to raise (kQmiRate above).
+    // In 6DOF mode the accelerometer runs at the gyro's rate.
     //
-    // Not LPF_OFF: the sensor runs slightly faster than the loop reads it, so
-    // some samples are dropped, and an unfiltered signal would alias.
+    // Not LPF_OFF: band-limiting still matters, the FIFO just removes the
+    // dropped-sample aliasing that came from reading at ~100Hz.
     qmi.configAccelerometer(SensorQMI8658::ACC_RANGE_16G,
-                            SensorQMI8658::ACC_ODR_125Hz,
+                            SensorQMI8658::ACC_ODR_500Hz,
                             SensorQMI8658::LPF_MODE_3);
     qmi.configGyroscope(SensorQMI8658::GYR_RANGE_1024DPS,
-                        SensorQMI8658::GYR_ODR_112_1Hz,
+                        SensorQMI8658::GYR_ODR_448_4Hz,
                         SensorQMI8658::LPF_MODE_3);
+    // Stream mode: when the loop stalls past the FIFO's depth the oldest samples
+    // go, not the newest.
+    qmi.configFIFO(SensorQMI8658::FIFO_MODE_STREAM, SensorQMI8658::FIFO_SAMPLES_64);
 
-    qmi.enableAccelerometer();
     qmi.enableGyroscope();
+    qmi.enableAccelerometer();
 
+    s_period = 1.0f / kQmiRate;
     last_update = micros();
     vqf.resetState();
     initialised = true;
@@ -64,35 +78,43 @@ bool qmi8658_init() {
 void qmi8658_update() {
     if (!initialised) return;
 
-    // Unlike the ICM path, this part exposes a data-ready flag, so we consume
-    // each sample exactly once instead of re-reading or skipping when the loop
-    // and the sensor ODR drift against each other.
-    if (!qmi.getDataReady()) return;
+    // Everything the part sampled since the last call (4-5 samples at ~100Hz),
+    // each consumed exactly once, in order.
+    const uint16_t n = qmi.readFromFifo(s_accFifo, kFifoMax, s_gyrFifo, kFifoMax);
+    if (n == 0) return;
 
-    float ax, ay, az, gx, gy, gz;
-    if (!qmi.getAccelerometer(ax, ay, az)) return;   // g
-    if (!qmi.getGyroscope(gx, gy, gz)) return;       // dps
-
-    // Raw counts for the wire format, in the same 2048 LSB/g units the ICMs
-    // report so the host applies one scale factor to every slot.
-    qmi.getAccelRaw(s_accel);
-
-    float acc[3] = {ax, ay, az};                     // VQF normalises accel
-
-    const float kDegToRad = (float)(M_PI / 180.0);
-    float gyr[3] = {gx * kDegToRad, gy * kDegToRad, gz * kDegToRad};
-
-    // Feed the real elapsed time, for the same reason as the ICM handler: the
-    // main loop's cadence jitters and a fixed dt accumulates orientation error.
+    // The FIFO samples are evenly spaced on the part's own clock, which runs a
+    // few percent off nominal; integrating at the nominal rate would scale every
+    // rotation by that error. Track the real period: elapsed time over samples
+    // read, smoothed (a single batch is jittery). Outliers (a stall that
+    // overflowed the FIFO) are skipped.
     uint32_t now = micros();
-    float dt = (now - last_update) * 1e-6f;          // unsigned math wraps fine
+    float elapsed = (now - last_update) * 1e-6f;     // unsigned math wraps fine
     last_update = now;
-    if (dt <= 0.0f || dt > 0.5f) {
-        dt = -1.0f;                                   // fall back to nominal
+    if (elapsed > 0.0f && elapsed < 0.5f) {
+        const float p = elapsed / n;
+        if (p > 0.5f / kQmiRate && p < 2.0f / kQmiRate) {
+            s_period += 0.02f * (p - s_period);
+        }
     }
 
-    vqf.updateGyr(gyr, dt);
-    vqf.updateAcc(acc);
+    const float kDegToRad = (float)(M_PI / 180.0);
+    for (uint16_t i = 0; i < n; i++) {
+        float gyr[3] = {s_gyrFifo[i].x * kDegToRad, s_gyrFifo[i].y * kDegToRad, s_gyrFifo[i].z * kDegToRad};
+        float acc[3] = {s_accFifo[i].x, s_accFifo[i].y, s_accFifo[i].z};   // g; VQF normalises accel
+        vqf.updateGyr(gyr, s_period);
+        vqf.updateAcc(acc);
+    }
+
+    // Raw counts of the newest sample for the wire format, in the same 2048
+    // LSB/g units the ICMs report so the host applies one scale factor to every
+    // slot (16g range: exactly 2048 LSB/g).
+    const IMUdata& a = s_accFifo[n - 1];
+    const float v[3] = {a.x, a.y, a.z};
+    for (int k = 0; k < 3; k++) {
+        float c = roundf(v[k] * 2048.0f);
+        s_accel[k] = (int16_t)(c > 32767.0f ? 32767.0f : (c < -32768.0f ? -32768.0f : c));
+    }
 }
 
 void qmi8658_get_quat(float quat[4]) {

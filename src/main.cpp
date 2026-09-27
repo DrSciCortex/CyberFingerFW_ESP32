@@ -795,6 +795,11 @@ void setup() {
   vrDirectMode = true;
   USBSerial.flush();
 
+  // The QMI8658's FIFO is read in one transfer of up to 64 samples x 12 bytes
+  // (qmi8658_handler.cpp). This core's requestFrom() doesn't clamp to the Wire
+  // buffer, so the default 128 bytes overflowed into the bus lock and asserted
+  // (reboot loop). 1024 holds a full FIFO.
+  Wire.setBufferSize(1024);
   Wire.begin(IIC_SDA, IIC_SCL);
   Wire.setClock(400000);
 
