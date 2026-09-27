@@ -36,6 +36,8 @@
 
 #include "splash_images.h"
 #include "audio.h"
+#include "icm45686_handler.h"
+#include "qmi8658_handler.h"
 #include "vr_gatt.h"
 #include "HWCDC.h"
 #include <Adafruit_DRV2605.h>
@@ -133,13 +135,168 @@ void initQueue_old() {
   }
 }
 
-#ifdef HAS_HAPTICS
 // haptics
+//
+// The DRV2605L haptic driver (CFV1BP only) and the ICM-45686 IMU are both
+// optional at the board level. Rather than shipping a firmware per variant,
+// each is probed on I2C at boot and these flags gate its use for the rest of
+// the run, so one binary covers boards with and without either part.
+bool g_hasHaptics = false;
+bool g_hasImu     = false;   // ICM-45686 @0x69, primary body
+bool g_hasJointImu = false;  // ICM-45686 @0x68, optional joint sensor
+bool g_hasQmi     = false;   // QMI8658 @0x6B, secondary body
+
+// Address-only probe. The first transaction on this bus after init reliably
+// NACKs even when the chip is present (the IO expander fails to install the
+// IDF I2C driver because Wire already owns port 0, which leaves the bus needing
+// a transaction to settle), so a single-shot probe reports false negatives.
+// Retry before concluding the part is absent.
+static bool i2cPresent(uint8_t addr, uint8_t tries = 4) {
+  for (uint8_t i = 0; i < tries; i++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) return true;
+    delay(2);
+  }
+  return false;
+}
+
+// Read a single register, for identifying an unknown part that ACKs.
+static bool i2cReadReg(uint8_t addr, uint8_t reg, uint8_t *out) {
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom((int)addr, 1) != 1) return false;
+  *out = Wire.read();
+  return true;
+}
+
+// Dump candidate WHO_AM_I locations for every IMU slot this board can carry:
+// two optional ICM-45686 (0x68/0x69, strapped via AP_AD0) and the onboard
+// QMI8658 (0x6B). Register 0x75 is where the driver currently looks, which is
+// the ICM-426xx/206xx location; 0x72 is the ICM-456xx one; QMI8658 reports at
+// 0x00. Printing all three tells us which part is really at which address.
+static void imuIdentify() {
+  const uint8_t addrs[] = {0x68, 0x69, 0x6B};
+  const uint8_t regs[]  = {0x00, 0x72, 0x75};
+  for (uint8_t a = 0; a < sizeof(addrs); a++) {
+    if (!i2cPresent(addrs[a], 1)) {
+      USBSerial.printf("[IMU] 0x%02X absent\n", addrs[a]);
+      continue;
+    }
+    USBSerial.printf("[IMU] 0x%02X present:", addrs[a]);
+    for (uint8_t r = 0; r < sizeof(regs); r++) {
+      uint8_t v = 0;
+      if (i2cReadReg(addrs[a], regs[r], &v)) {
+        USBSerial.printf("  reg%02X=0x%02X", regs[r], v);
+      } else {
+        USBSerial.printf("  reg%02X=ERR", regs[r]);
+      }
+    }
+    USBSerial.println();
+  }
+}
+
+// Magnitude of a raw accel triple, in g. Held still, ANY orientation should
+// give 1.000g - that invariant is what makes this check orientation-free.
+static float accelMagG(int16_t x, int16_t y, int16_t z) {
+  float fx = (float)x, fy = (float)y, fz = (float)z;
+  return sqrtf(fx * fx + fy * fy + fz * fz) / VR_ACCEL_LSB_PER_G;
+}
+
+// Settle the ICM-45686 data byte order empirically, and confirm the full-scale
+// range actually took. SlimeVR's own two drivers disagree on byte order: the
+// nRF register path parses big-endian, the ESP FIFO path little-endian.
+//
+// Hold the unit STILL. The correct row is the one whose magnitude reads
+// ~1.000g. A wrong FS range shows up as a magnitude that is off by a clean
+// factor (e.g. 4.00g if the part is still at 4g while we scale for 16g).
+static void imuEndianCheck(const char* label, uint8_t addr) {
+  uint8_t b[6];
+  Wire.beginTransmission(addr);
+  Wire.write(0x00);                        // ACCEL_DATA block
+  if (Wire.endTransmission(false) != 0) {
+    USBSerial.printf("[IMU] %s endian check: addr write failed\n", label);
+    return;
+  }
+  if (Wire.requestFrom((int)addr, 6) != 6) {
+    USBSerial.printf("[IMU] %s endian check: burst read failed\n", label);
+    return;
+  }
+  for (uint8_t i = 0; i < 6; i++) b[i] = Wire.read();
+
+  int16_t be[3] = { (int16_t)((b[0] << 8) | b[1]),
+                    (int16_t)((b[2] << 8) | b[3]),
+                    (int16_t)((b[4] << 8) | b[5]) };
+  int16_t le[3] = { (int16_t)((b[1] << 8) | b[0]),
+                    (int16_t)((b[3] << 8) | b[2]),
+                    (int16_t)((b[5] << 8) | b[4]) };
+
+  USBSerial.printf("[IMU] %s @0x%02X raw  %02X %02X  %02X %02X  %02X %02X\n",
+                   label, addr, b[0], b[1], b[2], b[3], b[4], b[5]);
+  USBSerial.printf("[IMU] %s   BE  %6d %6d %6d  |a|=%.3fg\n",
+                   label, be[0], be[1], be[2], accelMagG(be[0], be[1], be[2]));
+  USBSerial.printf("[IMU] %s   LE  %6d %6d %6d  |a|=%.3fg  <-- expect ~1.000\n",
+                   label, le[0], le[1], le[2], accelMagG(le[0], le[1], le[2]));
+}
+
+// Confirm the QMI8658 lands on the same 2048 LSB/g scale as the ICMs. This
+// path goes through SensorLib rather than raw registers, so the range is only
+// as good as the enum we passed it - held still, |a| must read ~1.000g.
+static void qmiScaleCheck() {
+  // Sample over time rather than trusting the first reading. The configured
+  // low-pass filter starts from zero state, so samples taken shortly after
+  // enable ramp UP toward the true value and read low - which is exactly what
+  // a premature check reports as a bogus scale error.
+  //
+  // A settling artifact converges toward 1.000g across these rows; a genuine
+  // scale/gain error stays put.
+  const uint16_t marks_ms[] = {50, 150, 300, 600};
+  uint32_t start = millis();
+  bool any = false;
+
+  for (uint8_t m = 0; m < sizeof(marks_ms) / sizeof(marks_ms[0]); m++) {
+    while (millis() - start < marks_ms[m]) {
+      qmi8658_update();
+      delay(2);
+    }
+    int16_t a[3] = {0, 0, 0};
+    qmi8658_get_accel(a);
+    if (!a[0] && !a[1] && !a[2]) {
+      USBSerial.printf("[IMU] QMI @%4ums  (no sample yet)\n", marks_ms[m]);
+      continue;
+    }
+    any = true;
+    USBSerial.printf("[IMU] QMI @%4ums  %6d %6d %6d  |a|=%.3fg\n",
+                     marks_ms[m], a[0], a[1], a[2], accelMagG(a[0], a[1], a[2]));
+  }
+
+  if (!any) {
+    USBSerial.println("[IMU] QMI scale check: sensor produced no samples");
+  } else {
+    USBSerial.println("[IMU] QMI  <-- last row should be ~1.000g once settled");
+  }
+}
+
+// Print every address that ACKs. Cheap, and the only reliable way to tell
+// "part is absent" from "part is at the address we did not expect".
+static void i2cScan() {
+  USBSerial.print("[I2C] scan:");
+  uint8_t found = 0;
+  for (uint8_t addr = 0x08; addr < 0x78; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      USBSerial.printf(" 0x%02X", addr);
+      found++;
+    }
+  }
+  USBSerial.printf("  (%u device%s)\n", found, found == 1 ? "" : "s");
+}
 
 Adafruit_DRV2605 drv;
 
 
 static void playEffect(uint8_t effectId) {
+  if (!g_hasHaptics) return;
   // Sequence slots 0..7, 0 terminates
   drv.setWaveform(0, effectId);
   drv.setWaveform(1, 0);
@@ -147,6 +304,7 @@ static void playEffect(uint8_t effectId) {
 }
 
 static void rtpBuzz(uint8_t strength, uint16_t ms) {
+  if (!g_hasHaptics) return;
   // Real-Time Playback: "strength" is 0..127-ish (implementation-dependent),
   // higher = stronger vibration (up to what motor/driver can deliver).
   drv.setMode(DRV2605_MODE_REALTIME);
@@ -155,7 +313,6 @@ static void rtpBuzz(uint8_t strength, uint16_t ms) {
   drv.setRealtimeValue(0);
   drv.setMode(DRV2605_MODE_INTTRIG); // back to effect playback mode
 }
-#endif // HAS_HAPTICS
 
 // Joystick change threshold
 //const uint16_t JOYSTICK_DEADZONE = 250;
@@ -300,6 +457,16 @@ public:
     using BleCompositeHID::BleCompositeHID;
     
     void onStarted(NimBLEServer* pServer) override {
+        // NimBLE 2.x never copies the GAP name into the advertisement, so hosts
+        // see no name at pairing time (Windows shows "Input", Linux the MAC).
+        // The name doesn't fit alongside flags+appearance+UUID in the 31-byte
+        // advert, so enable the scan response and put it there.
+        NimBLEAdvertising* adv = pServer->getAdvertising();
+        adv->enableScanResponse(true);
+        if (!adv->setName(deviceName)) {
+            USBSerial.println("[BLE] WARNING: could not advertise device name");
+        }
+
         USBSerial.println("[BLE] onStarted — adding VR GATT service");
         if (!vrGattInit(pServer, isRight)) {
             USBSerial.println("[BLE] WARNING: VR GATT service init failed");
@@ -313,9 +480,8 @@ XboxGamepadDevice *gamepad;
 MouseDevice *mouse;
 CyberFingerBLE *compositeHID;
 
-//previous power button state
-int prevPower = LOW;
-uint32_t time_powerpress = millis()+1000000;
+// Power-key shutdown-notice state. The key is serviced via the AXP2101 PMU
+// IRQ (see the main loop), not by polling a GPIO level.
 bool poweroff_notice = false;
 
 // VR Direct Mode state — when true, gamepad HID is suppressed and
@@ -632,9 +798,13 @@ void setup() {
   Wire.begin(IIC_SDA, IIC_SCL);
   Wire.setClock(400000);
 
+  // Wire.begin() above already installed the IDF I2C driver on port 0, and the
+  // expander speaks the same legacy driver/i2c.h API on that port. Use the
+  // address-only constructor (i2c_need_init = false) so init() does not try to
+  // install the driver a second time - that install fails with ESP_FAIL and
+  // leaves the expander without a handle.
   expander = new EXAMPLE_CHIP_CLASS(TCA95xx_8bit,
-                                    (i2c_port_t)0, ESP_IO_EXPANDER_I2C_TCA9554_ADDRESS_000,
-                                    IIC_SCL, IIC_SDA);
+                                    (i2c_port_t)0, ESP_IO_EXPANDER_I2C_TCA9554_ADDRESS_000);
   expander->init();
   expander->begin();
   expander->pinMode(0, OUTPUT);
@@ -660,11 +830,18 @@ void setup() {
     USBSerial.println("PMU is not online...");
   }
   else {
+    // The AXP2101 IRQ output is wired to IO-expander pin 4. The PMU latches
+    // that line on ANY event (power key, VBUS insert/remove, battery, …) and
+    // holds it asserted until clearIrqStatus() is called. Enable only the
+    // power-key edges/press events; the main loop decodes and clears them.
+    // (VBUS and other events are still cleared there, but ignored.)
     power.disableIRQ(XPOWERS_AXP2101_ALL_IRQ);
-    //power.setChargeTargetVoltage(2);
-    // Clear all interrupt flags
     power.clearIrqStatus();
-    // Enable the required interrupt function
+    power.enableIRQ(XPOWERS_AXP2101_PKEY_POSITIVE_IRQ |
+                    XPOWERS_AXP2101_PKEY_NEGATIVE_IRQ |
+                    XPOWERS_AXP2101_PKEY_SHORT_IRQ |
+                    XPOWERS_AXP2101_PKEY_LONG_IRQ);
+    power.clearIrqStatus();
 
     adcOn();
   }
@@ -759,6 +936,56 @@ void setup() {
 
   #endif
 
+  // IMU probe lives here rather than right after Wire.begin() so its output
+  // lands late enough in setup() to be visible on the USB CDC monitor, which
+  // the host has usually not attached yet at bus-init time. It also gives the
+  // I2C bus and the part more time to settle before the first transaction.
+  // Bus inventory: only useful when bringing up or reworking hardware.
+  if (cfg.boot_debug) {
+    i2cScan();
+    imuIdentify();
+  }
+
+  // Each ICM is initialized against its own address and fusion state. Both
+  // parts report the same WHO_AM_I, so which one is the body sensor and which
+  // is the joint sensor is decided purely by the AP_AD0 strapping - see the
+  // address defines in icm45686_handler.h.
+  //
+  // The ICM body sensor is DROPPED by default: it is redundant with the onboard
+  // QMI8658, and omitting it removes a quaternion+accel from every BLE packet,
+  // which eases scheduling two peripherals on one host. Define VR_STREAM_ICM_BODY
+  // to stream both body sensors again. Tradeoff: the ICM has a 2000dps gyro vs
+  // the QMI's 1024dps, so the QMI can saturate first on very fast motion.
+#ifdef VR_STREAM_ICM_BODY
+  g_hasImu = icm45686_init(ICM_BODY, ICM_ADDR_BODY);
+  USBSerial.printf("[IMU] ICM-45686 body  @0x%02X %s (WHO_AM_I=0x%02X)\n",
+                   ICM_ADDR_BODY, g_hasImu ? "OK" : "not present",
+                   icm45686_whoami(ICM_BODY));
+#else
+  g_hasImu = false;
+  USBSerial.println("[IMU] ICM-45686 body dropped from protocol "
+                    "(build default; define VR_STREAM_ICM_BODY to keep)");
+#endif
+
+  g_hasJointImu = icm45686_init(ICM_JOINT, ICM_ADDR_JOINT);
+  USBSerial.printf("[IMU] ICM-45686 joint @0x%02X %s (WHO_AM_I=0x%02X)\n",
+                   ICM_ADDR_JOINT, g_hasJointImu ? "OK" : "not present",
+                   icm45686_whoami(ICM_JOINT));
+
+  g_hasQmi = qmi8658_init();
+  USBSerial.printf("[IMU] QMI8658 @0x%02X %s\n", 0x6B,
+                   g_hasQmi ? "initialized successfully." : "not present.");
+
+  // Scale / byte-order verification. Costs ~700ms, most of it waiting out the
+  // QMI's startup transient, so it stays behind boot_debug. Held still, every
+  // sensor must report |a| ~= 1.000g - that invariant catches a wrong
+  // full-scale range or a byte-order regression in one glance.
+  if (cfg.boot_debug) {
+    delay(50);            // let a sample land after power-on
+    if (g_hasImu)      imuEndianCheck("body ", ICM_ADDR_BODY);
+    if (g_hasJointImu) imuEndianCheck("joint", ICM_ADDR_JOINT);
+    if (g_hasQmi)      qmiScaleCheck();
+  }
 
     // zero‑out history
   for (auto &p : history) p = {0,0,0};
@@ -859,23 +1086,32 @@ void setup() {
 
   #endif
 
-  #ifdef HAS_HAPTICS
-    if (!drv.begin()) {
-    USBSerial.println("DRV2605L not found on I2C (addr usually 0x5A). Check wiring.");
-    // Your motor is an ERM coin motor (2-wire DC). :contentReference[oaicite:1]{index=1}
-    drv.useERM();
-    // Pick an effect library (1..6). Library 1 is a common default.
-    drv.selectLibrary(1);
-    // Internal trigger: we call go() to play whatever is in the waveform slots.
-    drv.setMode(DRV2605_MODE_INTTRIG);
+  // Haptics are present only on CFV1BP boards. Probe the address directly:
+  // drv.begin() folds "not present" and "not ready" into one false, so it is
+  // not a reliable presence test here.
+  {
+    bool acked = i2cPresent(DRV2605_ADDR);
+    bool begun = drv.begin();
+    USBSerial.printf("[HAPTICS] probe 0x%02X ack=%d, drv.begin()=%d\n",
+                     DRV2605_ADDR, (int)acked, (int)begun);
 
-    Serial.println("Playing a few effects...");
-    playEffect(1);   delay(250);   // "strong click" style (varies by library)
-    playEffect(47);  delay(300);   // "buzz" style (varies by library)
-      playEffect(1);      // "strong click" style (varies by library)
-    //playEffect(52);  delay(400);
+    g_hasHaptics = acked;
+    if (g_hasHaptics) {
+      // Motor is an ERM coin motor (2-wire DC).
+      drv.useERM();
+      // Pick an effect library (1..6). Library 1 is a common default.
+      drv.selectLibrary(1);
+      // Internal trigger: we call go() to play whatever is in the waveform slots.
+      drv.setMode(DRV2605_MODE_INTTRIG);
+
+      USBSerial.println("[HAPTICS] DRV2605L ready, playing startup effects.");
+      playEffect(1);   delay(250);   // "strong click" style (varies by library)
+      playEffect(47);  delay(300);   // "buzz" style (varies by library)
+      playEffect(1);                 // "strong click" style (varies by library)
+    } else {
+      USBSerial.println("[HAPTICS] No DRV2605L on I2C - haptics disabled.");
+    }
   }
-  #endif // HAS_HAPTICS
 
   if (cfg.right_not_left) {
     USBSerial.println("Start cyberfinger right device SUCCESS.");
@@ -895,7 +1131,7 @@ void setup() {
 void loop() {
   uint16_t loop_period_us;
   //if (cfg.right_not_left) loop_period_us = 10000;
-  loop_period_us = 20000; // 20ms - 50Hz
+  loop_period_us = 10000; // 10ms - 100Hz
   bool changed = false;
   int32_t x, y, x2, y2;
 
@@ -1030,51 +1266,20 @@ void loop() {
 
   //USBSerial.println("OnNowRecv pkt age="+String(age_ms));
 
-  // read the power button and give feedback of immenant shutdown
-  int currPower = HIGH;
-  if (expander_present) {
-    currPower = expander->digitalRead(4);
-  }
+  // ── Power key handling via the AXP2101 PMU IRQ ───────────────────────────
+  // Expander pin 4 is the PMU's (latched, active) IRQ output. When it signals a
+  // pending event we read the PMU status over I2C, act only on power-key events,
+  // then ALWAYS clear so the line de-asserts. Reading the pin as a raw button
+  // level (the old approach) misfired on VBUS insert/remove and left the notice
+  // splash stuck, because the latched line never returned on its own.
+  if (expander_present && expander->digitalRead(4) == HIGH) {
+    power.getIrqStatus();
 
-  if (currPower != prevPower) {
-    if (currPower == HIGH) {
-      USBSerial.println("Button Power pressed");
-      time_powerpress = millis();
-
-    } else {
-      USBSerial.println("Button Power released");
-      uint32_t pressDuration = millis() - time_powerpress;
-
-      if (pressDuration < 2000) {
-        // ── Short press (<2s): Do smth ──
-        // TODO emit another button press event
-
-      } 
-      
-      if (poweroff_notice) {
-        #ifdef HAS_GFX
-        gfx->fillScreen(BLACK);
-        #endif //HAS_GFX
-        poweroff_notice = false;
-
-        // LOW_POWER: shutdown cancelled — clear the wake guard and restart
-        // the idle timer. Screen will go to SLPIN on the next timeout tick.
-#ifdef LOW_POWER
-        g_shutdownWake   = false;
-        g_lastActivityMs = millis();
-        USBSerial.println("[LOW_POWER] Shutdown cancelled — idle timer restarted.");
-#endif // LOW_POWER
-      }
-    }     
-    prevPower = currPower; 
-  }
-
-  // give user feedback already at 2s ... to anticipate a power-down at ~5s (hardware implements that)
-  if (currPower==HIGH && (millis() - time_powerpress)>2000) {
-
-    if (!poweroff_notice) {
+    // Long press → warn of imminent hardware power-off (~5s) with splash + sound.
+    if (power.isPekeyLongPressIrq() && !poweroff_notice) {
+      USBSerial.println("Button Power long press — shutdown notice");
       // LOW_POWER: wake screen + PA for the shutdown notice.
-      // g_shutdownWake blocks the idle timer while the button stays held.
+      // g_shutdownWake blocks the idle timer while the notice is showing.
 #ifdef LOW_POWER
       if (!g_shutdownWake) {
         g_shutdownWake = true;
@@ -1093,6 +1298,33 @@ void loop() {
       #endif
       poweroff_notice = true;
     }
+
+    // Button released → cancel a pending shutdown notice.
+    if (power.isPekeyNegativeIrq()) {
+      USBSerial.println("Button Power released");
+      if (poweroff_notice) {
+        #ifdef HAS_GFX
+        gfx->fillScreen(BLACK);
+        #endif //HAS_GFX
+        poweroff_notice = false;
+
+        // LOW_POWER: shutdown cancelled — clear the wake guard and restart
+        // the idle timer. Screen will go to SLPIN on the next timeout tick.
+#ifdef LOW_POWER
+        g_shutdownWake   = false;
+        g_lastActivityMs = millis();
+        USBSerial.println("[LOW_POWER] Shutdown cancelled — idle timer restarted.");
+#endif // LOW_POWER
+      }
+    }
+
+    if (power.isPekeyShortPressIrq()) {
+      // ── Short press: reserved for a future action ──
+      // TODO emit another button press event
+    }
+
+    // Always clear: de-asserts the IRQ line and drops VBUS/other events we ignore.
+    power.clearIrqStatus();
   }
 
  
@@ -1131,10 +1363,72 @@ void loop() {
   local.jx = joyX;
   local.jy = joyY;
 
+  // Update whichever IMUs this unit actually has. Absent sensors cost no I2C
+  // traffic and are reported via the imu_present bitmask.
+  // The PRIMARY body slot carries the best available body orientation, so it
+  // maps to the ICM body when that is streamed and to the QMI otherwise. The
+  // two body sensors are redundant; the SECONDARY slot is only used when BOTH
+  // are streamed. The bridge learns which slots exist from imu_present.
+  VrImuSet imus{};
+#ifdef VR_STREAM_ICM_BODY
+  if (g_hasImu) {
+    icm45686_update(ICM_BODY);
+    icm45686_get_quat(ICM_BODY, imus.body1);
+    icm45686_get_accel(ICM_BODY, imus.a_body1);
+    imus.present |= VR_IMU_BODY_PRIMARY;
+  }
+  if (g_hasQmi) {
+    qmi8658_update();
+    qmi8658_get_quat(imus.body2);
+    qmi8658_get_accel(imus.a_body2);
+    imus.present |= VR_IMU_BODY_SECONDARY;
+  }
+#else
+  // ICM body dropped: QMI is the sole body sensor and takes the PRIMARY slot.
+  if (g_hasQmi) {
+    qmi8658_update();
+    qmi8658_get_quat(imus.body1);
+    qmi8658_get_accel(imus.a_body1);
+    imus.present |= VR_IMU_BODY_PRIMARY;
+  }
+#endif
+  if (g_hasJointImu) {
+    icm45686_update(ICM_JOINT);
+    icm45686_get_quat(ICM_JOINT, imus.joint);
+    icm45686_get_accel(ICM_JOINT, imus.a_joint);
+    imus.present |= VR_IMU_JOINT;
+  }
+
   // ── VR DIRECT MODE ──
   // Each side independently sends its own data via BLE GATT.
   // No ESP-NOW gamepad merge. No Xbox HID reports.
-  vrGattSendInput(local, g_batteryPct);
+  vrGattSendInput(local, g_batteryPct, &imus);
+
+  // Report the connection interval the host actually granted. Each unit is one
+  // peripheral with one host connection, so left and right log their own value;
+  // if they differ, the host is failing to give both the requested ~7.5ms and
+  // that scheduling contention - not payload - is the latency source.
+  if (cfg.boot_debug) {
+    static uint32_t s_lastConnLog = 0;
+    if (millis() - s_lastConnLog > 2000) {
+      s_lastConnLog = millis();
+      // imu_present is what the firmware actually puts on the wire this frame.
+      // bit0=body-primary, bit1=body-secondary, bit2=joint. If bit2 is set here
+      // but the joint is missing in the GUI, the data IS being sent and the
+      // problem is downstream (bridge/GUI); if bit2 is clear, it is firmware.
+      USBSerial.printf("[VR] imu_present=0x%02X (P=%d S=%d J=%d)\n",
+                       imus.present,
+                       (imus.present & VR_IMU_BODY_PRIMARY)   ? 1 : 0,
+                       (imus.present & VR_IMU_BODY_SECONDARY) ? 1 : 0,
+                       (imus.present & VR_IMU_JOINT)          ? 1 : 0);
+      NimBLEServer* srv = NimBLEDevice::getServer();
+      if (srv && srv->getConnectedCount() > 0) {
+        NimBLEConnInfo ci = srv->getPeerInfo(0);
+        USBSerial.printf("[BLE] conn itvl = %.2f ms\n",
+                         ci.getConnInterval() * 1.25f);
+      }
+    }
+  }
 
   // Still respect loop timing
   uint32_t elapsed = micros() - loop_start;
